@@ -26,8 +26,48 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout
-        uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Bootstrap the bare Ubuntu runner
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if command -v sudo >/dev/null; then
+            SUDO=sudo
+          elif [[ "$(id -u)" == 0 ]]; then
+            SUDO=""
+          else
+            echo "error: the bare Ubuntu job needs sudo or a root user" >&2
+            exit 1
+          fi
+          ${SUDO} apt-get update
+          ${SUDO} apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl \
+            docker-buildx \
+            docker.io \
+            git \
+            python3-toml \
+            python3-yaml \
+            ripgrep \
+            shellcheck
+
+      - name: Check out the exact triggering revision
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          : "${GITHUB_WORKSPACE:?Forgejo did not provide GITHUB_WORKSPACE}"
+          : "${GITHUB_REF:?Forgejo did not provide GITHUB_REF}"
+          : "${GITHUB_SHA:?Forgejo did not provide GITHUB_SHA}"
+          repository="${GITHUB_SERVER_URL:-https://pubcode.archuser.org}/${GITHUB_REPOSITORY:-universalblue/bazzite-firebadnofire}.git"
+          cd "${GITHUB_WORKSPACE}"
+          git init
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "${repository}"
+          else
+            git remote add origin "${repository}"
+          fi
+          git fetch --no-tags --depth=1 origin "${GITHUB_REF}"
+          git checkout --detach "${GITHUB_SHA}"
+          [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]]
 
       - name: Verify runner capabilities
         shell: bash
@@ -44,21 +84,6 @@ jobs:
           docker info >/dev/null
           docker buildx version
 
-      - name: Install validation dependencies
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          if command -v sudo >/dev/null; then
-            SUDO=sudo
-          elif [[ "$(id -u)" == 0 ]]; then
-            SUDO=""
-          else
-            echo "error: shellcheck and Python YAML/TOML modules require sudo or a root job container" >&2
-            exit 1
-          fi
-          ${SUDO} apt-get update
-          ${SUDO} apt-get install -y --no-install-recommends python3-toml python3-yaml ripgrep shellcheck
-
       - name: Validate repository
         shell: bash
         run: bash scripts/validate-static.sh
@@ -72,7 +97,7 @@ jobs:
           created="$(date --utc +%Y-%m-%dT%H:%M:%SZ)"
           local_image="localhost/${IMAGE_NAME}:ci"
 
-          docker build \
+          docker buildx build --load \
             --pull \
             --platform linux/amd64 \
             --label "org.opencontainers.image.created=${created}" \
@@ -95,12 +120,12 @@ jobs:
           set -Eeuo pipefail
           docker run --rm --entrypoint /usr/bin/bash "${LOCAL_IMAGE}" -c '
             set -Eeuo pipefail
+            bootc container lint --fatal-warnings
             export XDG_RUNTIME_DIR=/tmp/hyprland-verify
             install -d -m 0700 "${XDG_RUNTIME_DIR}"
-            bootc container lint
             rpm -q hyprland hypridle hyprlock hyprpolkitagent \
               xdg-desktop-portal-hyprland libvirt-daemon-kvm qemu-kvm \
-              virt-manager bootc
+              virt-manager plasma-login-manager bootc
             Hyprland --verify-config --i-am-really-stupid \
               --config /usr/share/bazzite-firebadnofire/hyprland.lua
             test -x /usr/bin/looking-glass-client
@@ -115,6 +140,9 @@ jobs:
               /usr/share/wayland-sessions/hyprland.desktop
             test "$(systemctl is-enabled libvirtd.service)" = enabled
             test "$(systemctl is-enabled podman.socket)" = enabled
+            test "$(systemctl is-enabled plasmalogin.service)" = enabled
+            test "$(readlink -f /etc/systemd/system/display-manager.service)" = \
+              /usr/lib/systemd/system/plasmalogin.service
             ! ldd /usr/bin/looking-glass-client | grep -q "not found"
           '
 
@@ -208,4 +236,9 @@ jobs:
       - name: Log out of registry
         if: always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         shell: bash
-        run: docker logout "${IMAGE_REGISTRY}" || true
+        run: |
+          if ! command -v docker >/dev/null; then
+            echo "warning: Docker was unavailable, so there is no registry session to close" >&2
+          elif ! docker logout "${IMAGE_REGISTRY}"; then
+            echo "warning: registry logout failed after the job completed" >&2
+          fi

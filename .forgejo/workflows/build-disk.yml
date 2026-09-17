@@ -30,8 +30,57 @@ jobs:
             config: disk_config/iso.toml
 
     steps:
-      - name: Checkout
-        uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Bootstrap the bare Ubuntu runner
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if command -v sudo >/dev/null; then
+            SUDO=sudo
+          elif [[ "$(id -u)" == 0 ]]; then
+            SUDO=""
+          else
+            echo "error: the bare Ubuntu job needs sudo or a root user" >&2
+            exit 1
+          fi
+          ${SUDO} apt-get update
+          ${SUDO} apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl \
+            docker-buildx \
+            docker.io \
+            git \
+            xz-utils
+
+          readonly node_version=v24.17.0
+          readonly node_archive="node-${node_version}-linux-x64.tar.xz"
+          readonly node_sha256=ab343a1b747c7cbf3630dfd7dbf818c5423fab2eb4f5ad1afc896f6bd121a917
+          curl --fail --location --silent --show-error \
+            --output "/tmp/${node_archive}" \
+            "https://nodejs.org/dist/${node_version}/${node_archive}"
+          printf '%s  %s\n' "${node_sha256}" "/tmp/${node_archive}" | \
+            sha256sum --check --strict
+          ${SUDO} tar --extract --xz --file "/tmp/${node_archive}" \
+            --directory /usr/local --strip-components=1
+          node --version
+
+      - name: Check out the exact triggering revision
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          : "${GITHUB_WORKSPACE:?Forgejo did not provide GITHUB_WORKSPACE}"
+          : "${GITHUB_REF:?Forgejo did not provide GITHUB_REF}"
+          : "${GITHUB_SHA:?Forgejo did not provide GITHUB_SHA}"
+          repository="${GITHUB_SERVER_URL:-https://pubcode.archuser.org}/${GITHUB_REPOSITORY:-universalblue/bazzite-firebadnofire}.git"
+          cd "${GITHUB_WORKSPACE}"
+          git init
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "${repository}"
+          else
+            git remote add origin "${repository}"
+          fi
+          git fetch --no-tags --depth=1 origin "${GITHUB_REF}"
+          git checkout --detach "${GITHUB_SHA}"
+          [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]]
 
       - name: Verify privileged x86_64 Docker runner
         shell: bash
@@ -55,8 +104,16 @@ jobs:
           container="bib-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARTIFACT_TYPE}"
           helper="${container}-copy"
           cleanup() {
-            docker rm -f "${container}" "${helper}" >/dev/null 2>&1 || true
-            docker volume rm "${volume}" >/dev/null 2>&1 || true
+            for cleanup_container in "${container}" "${helper}"; do
+              if docker container inspect "${cleanup_container}" >/dev/null 2>&1 && \
+                ! docker rm -f "${cleanup_container}" >/dev/null; then
+                echo "warning: could not remove ${cleanup_container}" >&2
+              fi
+            done
+            if docker volume inspect "${volume}" >/dev/null 2>&1 && \
+              ! docker volume rm "${volume}" >/dev/null; then
+              echo "warning: could not remove ${volume}" >&2
+            fi
           }
           trap cleanup EXIT
 

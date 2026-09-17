@@ -49,12 +49,12 @@ inspect target=("localhost/" + image_name) tag=default_tag:
     set -Eeuo pipefail
     {{ engine }} run --rm --entrypoint /usr/bin/bash "{{ target }}:{{ tag }}" -c '
       set -Eeuo pipefail
+      bootc container lint --fatal-warnings
       export XDG_RUNTIME_DIR=/tmp/hyprland-verify
       install -d -m 0700 "${XDG_RUNTIME_DIR}"
-      bootc container lint
       rpm -q hyprland hypridle hyprlock hyprpolkitagent \
         xdg-desktop-portal-hyprland libvirt-daemon-kvm qemu-kvm \
-        virt-manager bootc
+        virt-manager plasma-login-manager bootc
       Hyprland --verify-config --i-am-really-stupid \
         --config /usr/share/bazzite-firebadnofire/hyprland.lua
       test -x /usr/bin/looking-glass-client
@@ -69,6 +69,9 @@ inspect target=("localhost/" + image_name) tag=default_tag:
         /usr/share/wayland-sessions/hyprland.desktop
       test "$(systemctl is-enabled libvirtd.service)" = enabled
       test "$(systemctl is-enabled podman.socket)" = enabled
+      test "$(systemctl is-enabled plasmalogin.service)" = enabled
+      test "$(readlink -f /etc/systemd/system/display-manager.service)" = \
+        /usr/lib/systemd/system/plasmalogin.service
       ! ldd /usr/bin/looking-glass-client | grep -q "not found"
     '
 

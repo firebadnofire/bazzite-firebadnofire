@@ -197,11 +197,19 @@ Both workflows select the existing global `ubuntu-22.04` label, currently
 served by the `opensuse-server` runner. The image workflow fails early unless
 the job is x86_64 and can reach a working Docker daemon and Docker Buildx.
 
+That label launches a minimal `ubuntu:22.04` job container, not a preloaded
+GitHub-hosted-runner image. Each workflow therefore installs the Jammy Docker
+CLI/Buildx and performs an exact-ref shell checkout of this public repository.
+The disk job also installs checksum-pinned Node.js 24 LTS because Forgejo's
+artifact uploader is a Node action. This avoids assuming that `node`, `git`, or
+`docker` already exists inside the job container while continuing to use the
+runner's external DinD daemon.
+
 The runner must provide:
 
 - an x86_64 Linux job environment;
-- Docker-in-Docker or equivalent Docker-daemon access;
-- BuildKit/Buildx;
+- Docker-in-Docker or equivalent Docker-daemon access exposed to the job;
+- permission for the root job container to install Jammy packages;
 - outbound HTTPS and valid CA trust for all package and registry endpoints;
 - enough storage for the Bazzite base, build layers, and artifacts (at least
   60 GiB free is a practical starting point; disk builds can require more);
@@ -451,7 +459,7 @@ Important remaining risks until independently validated:
 - third-party Hyprland COPR trust and availability;
 - compatibility between the current Fedora/Bazzite snapshot and current COPR
   RPM set;
-- real SDDM login and Hyprland session startup;
+- real Plasma Login Manager login and Hyprland session startup;
 - NVIDIA suspend/resume, display, VRR/HDR, and multi-monitor behavior;
 - Steam, Gamescope, screen sharing, and XWayland behavior under Hyprland;
 - Forgejo runner disk capacity, DinD privilege, registry permissions, and

@@ -110,6 +110,7 @@ rpm -q \
     hyprlock \
     hyprpolkitagent \
     libvirt-daemon-kvm \
+    plasma-login-manager \
     qemu-kvm \
     virt-manager \
     xdg-desktop-portal-hyprland
@@ -127,5 +128,8 @@ grep -qx 'DesktopNames=Hyprland' \
     /usr/share/wayland-sessions/hyprland.desktop
 test "$(systemctl is-enabled libvirtd.service)" = "enabled"
 test "$(systemctl is-enabled podman.socket)" = "enabled"
+test "$(systemctl is-enabled plasmalogin.service)" = "enabled"
+test "$(readlink -f /etc/systemd/system/display-manager.service)" = \
+    /usr/lib/systemd/system/plasmalogin.service
 
 dnf5 clean all
