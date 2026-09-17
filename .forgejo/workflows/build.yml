@@ -171,11 +171,11 @@ jobs:
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         shell: bash
         env:
-          REGISTRY_USERNAME: ${{ forgejo.actor }}
+          REGISTRY_USERNAME: firebadnofire
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -Eeuo pipefail
-          : "${REGISTRY_USERNAME:?Forgejo did not provide forgejo.actor}"
+          : "${REGISTRY_USERNAME:?REGISTRY_USERNAME is not configured}"
           : "${REGISTRY_TOKEN:?configure the REGISTRY_TOKEN repository secret with write:package scope}"
           if ! printf '%s' "${REGISTRY_TOKEN}" | docker login "${IMAGE_REGISTRY}" \
             --username "${REGISTRY_USERNAME}" --password-stdin; then
