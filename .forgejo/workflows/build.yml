@@ -17,6 +17,7 @@ concurrency:
 env:
   IMAGE_REGISTRY: pubcode.archuser.org
   IMAGE_PATH: universalblue/bazzite-firebadnofire
+  DOCKER_SMOKE_IMAGE: docker.io/library/hello-world:latest@sha256:5e23090353324d887c48ad5e5c56d294eab81588df9605b07d1afe895f9cc8f8
 
 jobs:
   image:
@@ -102,6 +103,7 @@ jobs:
             exit 1
           fi
           docker buildx version
+          docker run --rm "${DOCKER_SMOKE_IMAGE}"
 
       - name: Validate repository
         shell: bash

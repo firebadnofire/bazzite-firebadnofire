@@ -212,17 +212,108 @@ Docker daemon, and is lost when that runner container is replaced unless it is
 part of its image. Likewise, seeing `/var/run/docker.sock` inside a job is not
 proof of access; the preflight requires `docker info` to succeed.
 
-Use a dedicated Docker-in-Docker daemon for Actions, or place the runner in a
-dedicated VM with no unrelated workloads. Do not grant Actions access to the
-Docker socket of a server that also runs production services, and never make a
-Docker socket world-writable. Socket access is effectively root access to the
-daemon's host. Forgejo documents the supported `runner.envs.DOCKER_HOST` and
-`container.docker_host` configurations in its
-[Docker access guide](https://forgejo.org/docs/latest/admin/actions/docker-access/).
-The exact endpoint, network, TLS, and certificate mounts belong in the runner's
-deployment configuration and depend on that deployment; they are not guessed
-in this repository. Prefer a TLS-protected DinD endpoint when it crosses a
-container or host trust boundary.
+The deployed `opensuse-server` runner uses one isolated, TLS-enabled DinD
+daemon. Its external deployment lives on the runner host at
+`/home/william/docker/forgejo-runner`; it is intentionally not copied into this
+repository. The four runtime layers are:
+
+1. the host Docker daemon starts the runner and DinD containers;
+2. the non-privileged `forgejo-runner` container connects to DinD at
+   `tcp://docker:2376` with the generated client certificate;
+3. DinD creates the per-job Ubuntu container with host networking relative to
+   the DinD container, so the job connects to the same daemon at
+   `tcp://127.0.0.1:2376`;
+4. Docker commands in the job create the image-build and privileged
+   bootc-image-builder containers in that same isolated daemon.
+
+The runner does not mount `/var/run/docker.sock` and is not privileged. Only
+the dedicated DinD service is privileged; its port is not published to the
+host. This prevents workflows from directly controlling the host daemon and
+its unrelated workloads. It does not turn a privileged container into a hard
+security boundary: keep the runner host patched and prefer a dedicated runner
+VM if untrusted contributors can execute workflows. Never make a Docker socket
+world-writable. Forgejo's [Docker access guide](https://forgejo.org/docs/latest/admin/actions/docker-access/)
+and [Actions security guidance](https://forgejo.org/docs/latest/admin/actions/security/)
+describe the underlying trust model.
+
+The runner host Compose file pins
+`docker:29.5.2-dind@sha256:6b9cd914eb9c6b342c040a49a27a5eb3804453bae6ecc90f7ff96133595a95e8`
+and includes these essential settings (the cache services are omitted here):
+
+```yaml
+services:
+  docker-in-docker:
+    image: docker.io/library/docker:29.5.2-dind@sha256:6b9cd914eb9c6b342c040a49a27a5eb3804453bae6ecc90f7ff96133595a95e8
+    hostname: docker
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: /certs
+    volumes:
+      - docker-certs:/certs:z
+      - docker-data:/var/lib/docker
+    networks: [runner-dind]
+
+  runner:
+    environment:
+      DOCKER_HOST: tcp://docker:2376
+      DOCKER_TLS_VERIFY: "1"
+      DOCKER_CERT_PATH: /certs/client
+    volumes:
+      - docker-certs:/certs:ro,z
+    networks: [ci-network, runner-dind]
+
+volumes:
+  docker-certs:
+  docker-data:
+
+networks:
+  ci-network:
+    external: true
+  runner-dind:
+    driver: bridge
+```
+
+The `:z` labels are required on the SELinux-enabled runner host so both
+containers can read the certificate volume. Do not replace them with broad
+filesystem permissions. Keep the client private key inside the Docker-managed
+volume and do not log, copy, or commit it.
+
+`data/runner-config.yml` passes the TLS endpoint into each job without asking
+Forgejo Runner to mount a host socket:
+
+```yaml
+runner:
+  envs:
+    DOCKER_HOST: tcp://127.0.0.1:2376
+    DOCKER_TLS_VERIFY: "1"
+    DOCKER_CERT_PATH: /certs/client
+
+container:
+  network: "host"
+  privileged: false
+  options: "--volume /certs/client:/certs/client:ro"
+  valid_volumes:
+    - /certs/client
+  docker_host: "-"
+```
+
+Before changing that external deployment, back up both files. Validate the
+rendered configuration before restarting:
+
+```bash
+cd /home/william/docker/forgejo-runner
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+cp -a docker-compose.yml "docker-compose.yml.bak.${stamp}"
+cp -a data/runner-config.yml "data/runner-config.yml.bak.${stamp}"
+docker compose config --quiet
+docker compose up -d
+docker compose ps
+docker logs --tail 100 forgejo-runner
+```
+
+If startup fails, restore both files from the same timestamp and run
+`docker compose up -d` again. Do not restore only one file because the endpoint
+and job propagation settings form one contract.
 
 The runner must provide:
 
@@ -238,6 +329,16 @@ The disk workflow additionally runs bootc-image-builder with `--privileged`.
 The runner's Docker policy must allow privileged containers and named volumes.
 It does not require host Podman and does not bind the job workspace into the
 DinD daemon; configuration and outputs are transferred with `docker cp`.
+
+Every job preflight runs `docker --version`, `docker info`, and
+`docker buildx version`, then starts the digest-pinned `hello-world` image. The
+disk preflight additionally starts the pinned bootc-image-builder image with
+`--privileged` and prints its version. If the client exists but `docker info`
+fails, check all three propagation points: the runner's `tcp://docker:2376`
+endpoint, the job's `tcp://127.0.0.1:2376` endpoint, and read access to
+`/certs/client`. On an SELinux host, `permission denied` for `ca.pem` normally
+means the shared `:z` volume label is missing. Installing `docker-cli` inside
+the runner container or changing socket permissions does not repair this path.
 
 The workflows deliberately do not select the macOS runner or the currently
 offline FreeBSD and Windows runners.

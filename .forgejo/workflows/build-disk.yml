@@ -11,6 +11,7 @@ concurrency:
 env:
   IMAGE_REF: pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable
   BIB_IMAGE: quay.io/centos-bootc/bootc-image-builder:latest@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b
+  DOCKER_SMOKE_IMAGE: docker.io/library/hello-world:latest@sha256:5e23090353324d887c48ad5e5c56d294eab81588df9605b07d1afe895f9cc8f8
 
 jobs:
   disk:
@@ -114,6 +115,8 @@ jobs:
             fi
             exit 1
           fi
+          docker buildx version
+          docker run --rm "${DOCKER_SMOKE_IMAGE}"
           docker run --rm --privileged "${BIB_IMAGE}" --version
 
       - name: Build ${{ matrix.artifact }}
