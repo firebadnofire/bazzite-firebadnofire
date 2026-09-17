@@ -202,8 +202,27 @@ GitHub-hosted-runner image. Each workflow therefore installs the Jammy Docker
 CLI/Buildx and performs an exact-ref shell checkout of this public repository.
 The disk job also installs checksum-pinned Node.js 24 LTS because Forgejo's
 artifact uploader is a Node action. This avoids assuming that `node`, `git`, or
-`docker` already exists inside the job container while continuing to use the
-runner's external DinD daemon.
+`docker` already exists inside the job container. Docker operations still
+require the runner administrator to expose a dedicated external DinD daemon.
+
+The Alpine `forgejo-runner` container and the per-job Ubuntu container are
+separate environments. Installing `docker-cli` interactively with `apk` in the
+runner container does not install it in a job, does not repair job access to a
+Docker daemon, and is lost when that runner container is replaced unless it is
+part of its image. Likewise, seeing `/var/run/docker.sock` inside a job is not
+proof of access; the preflight requires `docker info` to succeed.
+
+Use a dedicated Docker-in-Docker daemon for Actions, or place the runner in a
+dedicated VM with no unrelated workloads. Do not grant Actions access to the
+Docker socket of a server that also runs production services, and never make a
+Docker socket world-writable. Socket access is effectively root access to the
+daemon's host. Forgejo documents the supported `runner.envs.DOCKER_HOST` and
+`container.docker_host` configurations in its
+[Docker access guide](https://forgejo.org/docs/latest/admin/actions/docker-access/).
+The exact endpoint, network, TLS, and certificate mounts belong in the runner's
+deployment configuration and depend on that deployment; they are not guessed
+in this repository. Prefer a TLS-protected DinD endpoint when it crosses a
+container or host trust boundary.
 
 The runner must provide:
 

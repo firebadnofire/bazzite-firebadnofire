@@ -90,7 +90,30 @@ jobs:
             echo "error: disk artifacts only support x86_64" >&2
             exit 1
           }
-          docker info >/dev/null
+          command -v docker >/dev/null || {
+            echo "error: the Ubuntu job container does not have a Docker client" >&2
+            exit 1
+          }
+          docker --version
+          if [[ -n "${DOCKER_HOST:-}" ]]; then
+            echo "Docker endpoint: configured through DOCKER_HOST"
+          elif [[ -S /var/run/docker.sock ]]; then
+            stat --format='Docker socket: mode=%a uid=%u gid=%g' \
+              /var/run/docker.sock
+          else
+            echo "error: no DOCKER_HOST or Docker UNIX socket is available in the job container" >&2
+            exit 1
+          fi
+          if ! docker info >/dev/null; then
+            echo "error: the Docker client is installed, but this job container cannot access a Docker daemon" >&2
+            echo "error: configure an isolated DinD endpoint in Forgejo Runner; do not make the host socket world-writable" >&2
+            id >&2
+            if [[ -e /var/run/docker.sock ]]; then
+              stat --format='error: socket mode=%a uid=%u gid=%g' \
+                /var/run/docker.sock >&2
+            fi
+            exit 1
+          fi
           docker run --rm --privileged "${BIB_IMAGE}" --version
 
       - name: Build ${{ matrix.artifact }}
