@@ -350,10 +350,34 @@ Do not put their values in files, workflow logs, commits, or issue text.
 
 | Secret | Purpose | Required for |
 | --- | --- | --- |
-| `REGISTRY_USERNAME` | Forgejo account permitted to publish packages for `universalblue` | Publication |
-| `REGISTRY_TOKEN` | Sensitive Forgejo access token with repository/package write access | Publication |
+| `REGISTRY_TOKEN` | Forgejo PAT with `write:package` scope, owned by an account permitted to publish packages for `universalblue` | Publication |
 | `COSIGN_PRIVATE_KEY` | Entire contents of the local `cosign.key` | Signing |
 | `COSIGN_PASSWORD` | Password used when the Cosign key was generated | Signing |
+
+Forgejo 13.0.3 [automatically creates a unique `FORGEJO_TOKEN`](https://forgejo.org/docs/v13.0/user/actions/basic-concepts/#automatic-token)
+for each workflow and removes it when the workflow finishes. It is available as the
+`FORGEJO_TOKEN` environment variable, `forgejo.token`, and
+`secrets.FORGEJO_TOKEN`; the similarly named `GITHUB_TOKEN` values are
+compatibility aliases. This repository uses Forgejo-native context names when
+it needs Forgejo context.
+
+The automatic token has repository write access, but Forgejo 13.0.3 does not
+map its synthetic `forgejo-actions` user to package permissions; its
+[package authorization implementation](https://codeberg.org/forgejo/forgejo/src/tag/v13.0.3/services/context/package.go#L95-L148)
+still marks that check as unfinished. It therefore
+cannot push `pubcode.archuser.org/universalblue/bazzite-firebadnofire`. Registry
+publication still requires the narrowly scoped `REGISTRY_TOKEN`; do not replace
+it with a broader account password or an all-scopes token. The workflow supplies
+the non-secret `forgejo.actor` value as Docker's required username field, while
+Forgejo derives the authenticated account and package authorization from the
+PAT. `REGISTRY_USERNAME` is no longer a repository secret or variable.
+
+Create the PAT from the publishing account's Forgejo user settings with only
+`write:package`, then add its value at **Settings → Actions → Secrets** as
+`REGISTRY_TOKEN`. The token owner must be an organization owner or belong to a
+team allowed to publish packages for `universalblue`. A successful Docker login
+only proves token authentication; the workflow reports a separate actionable
+error if the subsequent push lacks organization package permission.
 
 `cosign.pub` is public verification material and is intentionally committed.
 `cosign.key` is intentionally ignored. This repository never reads it during
@@ -376,6 +400,10 @@ commit a private key.
   `main`.
 
 Markdown-only pushes to `main` are ignored. There is no scheduled publication.
+Before pushing to `main` or manually dispatching `main`, configure all three
+secrets listed above. For a non-publishing build verification, open or update a
+pull request targeting `main`; pull-request runs build and inspect the image but
+do not receive or use publication and signing secrets.
 
 A successful production run publishes these tags:
 
@@ -420,6 +448,12 @@ After a signed `stable` image exists, manually dispatch
 
 Each matrix job uploads an uncompressed Forgejo artifact retained for 30 days.
 The installer is configured to track this repository's `stable` image.
+The repository and owning organization are public, so packages published under
+that owner are anonymously readable. This workflow deliberately pulls `stable`
+without registry credentials; no PAT is exposed to the privileged disk-build
+job. If the package or organization is made private later, add job-scoped pull
+authentication using the minimum supported credential at that time rather than
+logging the DinD daemon in globally.
 
 The Anaconda ISO type is a compatibility path in bootc-image-builder and is
 being superseded upstream. A future migration should evaluate the unified

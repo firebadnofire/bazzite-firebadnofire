@@ -171,14 +171,18 @@ jobs:
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         shell: bash
         env:
-          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_USERNAME: ${{ forgejo.actor }}
           REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -Eeuo pipefail
-          : "${REGISTRY_USERNAME:?configure the REGISTRY_USERNAME repository secret}"
-          : "${REGISTRY_TOKEN:?configure the REGISTRY_TOKEN repository secret}"
-          printf '%s' "${REGISTRY_TOKEN}" | docker login "${IMAGE_REGISTRY}" \
-            --username "${REGISTRY_USERNAME}" --password-stdin
+          : "${REGISTRY_USERNAME:?Forgejo did not provide forgejo.actor}"
+          : "${REGISTRY_TOKEN:?configure the REGISTRY_TOKEN repository secret with write:package scope}"
+          if ! printf '%s' "${REGISTRY_TOKEN}" | docker login "${IMAGE_REGISTRY}" \
+            --username "${REGISTRY_USERNAME}" --password-stdin; then
+            echo "error: Forgejo registry login failed" >&2
+            echo "error: REGISTRY_TOKEN must be a PAT with write:package scope whose owner may publish packages for universalblue" >&2
+            exit 1
+          fi
 
       - name: Publish immutable and stream tags
         id: publish
@@ -198,7 +202,11 @@ jobs:
 
           for tag in "${tags[@]}"; do
             docker tag "${LOCAL_IMAGE}" "${image_ref}:${tag}"
-            docker push "${image_ref}:${tag}"
+            if ! docker push "${image_ref}:${tag}"; then
+              echo "error: registry push failed for ${image_ref}:${tag}" >&2
+              echo "error: verify REGISTRY_TOKEN has write:package scope and its owner may publish packages for universalblue" >&2
+              exit 1
+            fi
           done
 
           digest="sha256:$(docker buildx imagetools inspect \
