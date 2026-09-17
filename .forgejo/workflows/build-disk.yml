@@ -1,0 +1,92 @@
+---
+name: Build disk artifacts
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: disk-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_REF: pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable
+  BIB_IMAGE: quay.io/centos-bootc/bootc-image-builder:latest@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b
+
+jobs:
+  disk:
+    name: ${{ matrix.artifact }} (x86_64)
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - artifact: qcow2
+            type: qcow2
+            config: disk_config/disk.toml
+          - artifact: installer-iso
+            type: anaconda-iso
+            config: disk_config/iso.toml
+
+    steps:
+      - name: Checkout
+        uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Verify privileged x86_64 Docker runner
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$(uname -m)" == "x86_64" ]] || {
+            echo "error: disk artifacts only support x86_64" >&2
+            exit 1
+          }
+          docker info >/dev/null
+          docker run --rm --privileged "${BIB_IMAGE}" --version
+
+      - name: Build ${{ matrix.artifact }}
+        shell: bash
+        env:
+          ARTIFACT_TYPE: ${{ matrix.type }}
+          CONFIG_FILE: ${{ matrix.config }}
+        run: |
+          set -Eeuo pipefail
+          volume="bib-output-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARTIFACT_TYPE}"
+          container="bib-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARTIFACT_TYPE}"
+          helper="${container}-copy"
+          cleanup() {
+            docker rm -f "${container}" "${helper}" >/dev/null 2>&1 || true
+            docker volume rm "${volume}" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker volume create "${volume}" >/dev/null
+          docker create --name "${container}" \
+            --privileged \
+            --network host \
+            --security-opt label=type:unconfined_t \
+            --volume "${volume}:/output" \
+            "${BIB_IMAGE}" \
+            --type "${ARTIFACT_TYPE}" \
+            --rootfs btrfs \
+            --use-librepo=true \
+            "${IMAGE_REF}" >/dev/null
+          docker cp "${CONFIG_FILE}" "${container}:/config.toml"
+          docker start --attach "${container}"
+
+          mkdir -p output
+          docker create --name "${helper}" --volume "${volume}:/output:ro" \
+            --entrypoint /usr/bin/true "${BIB_IMAGE}" >/dev/null
+          docker cp "${helper}:/output/." output/
+
+          find output -type f -print0 | sort -z | xargs -0 sha256sum > output/SHA256SUMS
+          test -s output/SHA256SUMS
+
+      - name: Upload ${{ matrix.artifact }}
+        uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
+        with:
+          name: bazzite-firebadnofire-${{ matrix.artifact }}-${{ github.sha }}
+          path: output/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0

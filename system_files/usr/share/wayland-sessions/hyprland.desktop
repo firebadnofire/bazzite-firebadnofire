@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Hyprland
+Comment=Bazzite Firebadnofire Hyprland session
+Exec=/usr/libexec/bazzite-firebadnofire-start-hyprland
+TryExec=/usr/bin/Hyprland
+Type=Application
+DesktopNames=Hyprland

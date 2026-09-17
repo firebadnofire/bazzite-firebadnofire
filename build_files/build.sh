@@ -1,27 +1,131 @@
-#!/bin/bash
+#!/usr/bin/bash
 
-set -ouex pipefail
+set -Eeuo pipefail
 
-# Copy the contents of system_files/ of the git repo to /
-cp -avf "/ctx/system_files"/. /
+readonly HYPRLAND_COPR="lionheartp/Hyprland"
 
-### Install packages
+desktop_packages=(
+    blueman brightnessctl cliphist fuzzel grim kitty network-manager-applet
+    pavucontrol playerctl qt5-qtwayland qt6-qtwayland slurp
+    SwayNotificationCenter waybar wl-clipboard xdg-desktop-portal-gtk
+)
 
-# Packages can be installed from any enabled yum repo on the image.
-# RPMfusion repos are available by default in ublue main images
-# List of rpmfusion packages can be found here:
-# https://mirrors.rpmfusion.org/mirrorlist?path=free/fedora/updates/43/x86_64/repoview/index.html&protocol=https&redirect=1
+admin_packages=(
+    bat dmidecode fd-find gh git-lfs hwinfo iperf3 iotop lsscsi minicom
+    mosh ncdu nmap nmap-ncat pv ripgrep screen strace sysstat tree wget
+    wireshark-cli
+)
 
-# this installs a package from fedora repos
-dnf5 install -y tmux
+development_packages=(
+    cmake gcc gcc-c++ make meson ninja-build pkgconf-pkg-config python3-pip
+)
 
-# Use a COPR Example:
-#
-# dnf5 -y copr enable ublue-os/staging
-# dnf5 -y install package
-# Disable COPRs so they don't end up enabled on the final image:
-# dnf5 -y copr disable ublue-os/staging
+virtualization_packages=(
+    libguestfs-tools libvirt libvirt-client libvirt-daemon-kvm
+    qemu-kvm spice-gtk swtpm swtpm-tools virt-install virt-manager virt-viewer
+)
 
-#### Example for enabling a System Unit File
+looking_glass_build_packages=(
+    binutils-devel cmake dejavu-sans-mono-fonts fontconfig-devel
+    libdecor-devel libglvnd-devel libsamplerate-devel libXcursor-devel
+    libXi-devel libXinerama-devel libXpresent-devel libXrandr-devel
+    libXScrnSaver-devel libxkbcommon-x11-devel make nettle-devel
+    pipewire-devel pkgconf-pkg-config pulseaudio-libs-devel spice-protocol wayland-devel
+    wayland-protocols-devel
+)
 
-systemctl enable podman.socket
+# Fedora does not currently ship Hyprland for Fedora 44. Enable this narrowly
+# scoped, GPG-checked COPR only for the packages Bazzite needs, then disable it
+# so installed systems do not receive unreviewed packages from it implicitly.
+dnf5 -y copr enable "${HYPRLAND_COPR}"
+dnf5 -y install \
+    hypridle \
+    hyprland \
+    hyprlock \
+    hyprpolkitagent \
+    xdg-desktop-portal-hyprland
+dnf5 -y copr disable "${HYPRLAND_COPR}"
+
+dnf5 -y install \
+    "${desktop_packages[@]}" \
+    "${admin_packages[@]}" \
+    "${development_packages[@]}" \
+    "${virtualization_packages[@]}" \
+    "${looking_glass_build_packages[@]}"
+
+# Fedora 44 has no maintained Looking Glass client package. Build the current
+# stable upstream source archive (which includes its submodules) after checking
+# its pinned digest. Do not install the optional kvmfr kernel module: IVSHMEM,
+# SELinux policy, PCI binding, and guest/host pairing are machine-specific.
+readonly LOOKING_GLASS_VERSION="B7"
+readonly LOOKING_GLASS_SHA256="09e506660ccc1b9691d06caa70179b52ffb4393299895cff3c2f0e74fcd69985"
+readonly looking_glass_archive="/tmp/looking-glass-${LOOKING_GLASS_VERSION}.tar.gz"
+
+curl --fail --location --silent --show-error \
+    --output "${looking_glass_archive}" \
+    https://looking-glass.io/artifact/stable/source
+printf '%s  %s\n' "${LOOKING_GLASS_SHA256}" "${looking_glass_archive}" |
+    sha256sum --check --strict
+tar --extract --gzip --file "${looking_glass_archive}" --directory /tmp
+cmake \
+    -S "/tmp/looking-glass-${LOOKING_GLASS_VERSION}/client" \
+    -B "/tmp/looking-glass-${LOOKING_GLASS_VERSION}/client/build" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_FLAGS="-Wno-error=maybe-uninitialized" \
+    -DCMAKE_INSTALL_PREFIX=/usr \
+    -DENABLE_BACKTRACE=OFF \
+    -DENABLE_LIBDECOR=ON \
+    -DOPTIMIZE_FOR_NATIVE=OFF
+cmake --build "/tmp/looking-glass-${LOOKING_GLASS_VERSION}/client/build" \
+    --parallel "$(nproc)"
+cmake --install "/tmp/looking-glass-${LOOKING_GLASS_VERSION}/client/build"
+install -D -m 0644 \
+    "/tmp/looking-glass-${LOOKING_GLASS_VERSION}/LICENSE" \
+    /usr/share/licenses/looking-glass-client/LICENSE
+
+# Copy after package installation so intentional session and system defaults in
+# the repository win over package defaults.
+cp -avf /ctx/system_files/. /
+
+chmod 0755 \
+    /usr/libexec/bazzite-firebadnofire-screenshot \
+    /usr/libexec/bazzite-firebadnofire-start-hyprland
+
+# Package scriptlets may create deployment-time state while building the image.
+# /boot and /run must be clean in a bootc container; persistent /var directory
+# ownership is declared in the tmpfiles overlay copied above.
+rm -rf \
+    /boot/extlinux \
+    /run/dnf \
+    /run/gluster \
+    /run/screen \
+    /run/selinux-policy
+
+systemctl enable libvirtd.service podman.socket
+
+# Fail the image build if the user-facing workstation contract is incomplete.
+rpm -q \
+    hyprland \
+    hypridle \
+    hyprlock \
+    hyprpolkitagent \
+    libvirt-daemon-kvm \
+    qemu-kvm \
+    virt-manager \
+    xdg-desktop-portal-hyprland
+test -x /usr/libexec/bazzite-firebadnofire-start-hyprland
+test -x /usr/libexec/bazzite-firebadnofire-screenshot
+test -x /usr/bin/looking-glass-client
+test -x /usr/libexec/xdg-desktop-portal-hyprland
+test -x /usr/libexec/hyprpolkitagent
+test -f /usr/share/wayland-sessions/hyprland.desktop
+test -f /usr/share/bazzite-firebadnofire/hyprland.lua
+test -f /usr/lib/tmpfiles.d/bazzite-firebadnofire.conf
+grep -qx 'Exec=/usr/libexec/bazzite-firebadnofire-start-hyprland' \
+    /usr/share/wayland-sessions/hyprland.desktop
+grep -qx 'DesktopNames=Hyprland' \
+    /usr/share/wayland-sessions/hyprland.desktop
+test "$(systemctl is-enabled libvirtd.service)" = "enabled"
+test "$(systemctl is-enabled podman.socket)" = "enabled"
+
+dnf5 clean all

@@ -1,0 +1,22 @@
+#!/usr/bin/bash
+
+set -Eeuo pipefail
+
+: "${HOME:?HOME must be set before taking a screenshot}"
+
+readonly screenshot_dir="${XDG_SCREENSHOTS_DIR:-${HOME}/Pictures/Screenshots}"
+timestamp="$(date --utc +%Y-%m-%d_%H-%M-%S_UTC)"
+readonly timestamp
+readonly output="${screenshot_dir}/Screenshot_${timestamp}.png"
+
+install -d -m 0700 "${screenshot_dir}"
+
+if [[ "${1:-}" == "region" ]]; then
+    geometry="$(slurp)" || exit 0
+    grim -g "${geometry}" "${output}"
+else
+    grim "${output}"
+fi
+
+wl-copy --type image/png <"${output}"
+notify-send --app-name="Screenshot" "Screenshot saved" "${output}"

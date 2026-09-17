@@ -1,0 +1,12 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:best-practices"],
+  "rebaseWhen": "never",
+  "packageRules": [
+    {
+      "description": "Review all base-image and CI supply-chain changes manually",
+      "automerge": false,
+      "matchDatasources": ["docker", "github-releases"]
+    }
+  ]
+}

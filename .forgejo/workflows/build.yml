@@ -1,0 +1,211 @@
+---
+name: Validate, build, publish, and sign
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+  workflow_dispatch:
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_REGISTRY: pubcode.archuser.org
+  IMAGE_PATH: universalblue/bazzite-firebadnofire
+
+jobs:
+  image:
+    name: x86_64 image
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: https://code.forgejo.org/actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Verify runner capabilities
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$(uname -m)" == "x86_64" ]] || {
+            echo "error: this workflow only supports an x86_64 runner" >&2
+            exit 1
+          }
+          command -v docker >/dev/null || {
+            echo "error: the ubuntu-22.04 runner must provide Docker with DinD access" >&2
+            exit 1
+          }
+          docker info >/dev/null
+          docker buildx version
+
+      - name: Install validation dependencies
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if command -v sudo >/dev/null; then
+            SUDO=sudo
+          elif [[ "$(id -u)" == 0 ]]; then
+            SUDO=""
+          else
+            echo "error: shellcheck and Python YAML/TOML modules require sudo or a root job container" >&2
+            exit 1
+          fi
+          ${SUDO} apt-get update
+          ${SUDO} apt-get install -y --no-install-recommends python3-toml python3-yaml ripgrep shellcheck
+
+      - name: Validate repository
+        shell: bash
+        run: bash scripts/validate-static.sh
+
+      - name: Build image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          source bazzite-firebadnofire.env
+          short_sha="${GITHUB_SHA:0:12}"
+          created="$(date --utc +%Y-%m-%dT%H:%M:%SZ)"
+          local_image="localhost/${IMAGE_NAME}:ci"
+
+          docker build \
+            --pull \
+            --platform linux/amd64 \
+            --label "org.opencontainers.image.created=${created}" \
+            --label "org.opencontainers.image.description=${IMAGE_DESC}" \
+            --label "org.opencontainers.image.documentation=${REPO_URL}" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.source=${REPO_URL}" \
+            --label "org.opencontainers.image.title=${IMAGE_NAME}" \
+            --label "org.opencontainers.image.url=${REPO_URL}" \
+            --label "org.opencontainers.image.vendor=${REPO_ORGANIZATION}" \
+            --label "org.opencontainers.image.version=${DEFAULT_TAG}.${short_sha}" \
+            --tag "${local_image}" \
+            --file Containerfile \
+            .
+          echo "LOCAL_IMAGE=${local_image}" >> "${GITHUB_ENV}"
+
+      - name: Inspect image contract
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          docker run --rm --entrypoint /usr/bin/bash "${LOCAL_IMAGE}" -c '
+            set -Eeuo pipefail
+            export XDG_RUNTIME_DIR=/tmp/hyprland-verify
+            install -d -m 0700 "${XDG_RUNTIME_DIR}"
+            bootc container lint
+            rpm -q hyprland hypridle hyprlock hyprpolkitagent \
+              xdg-desktop-portal-hyprland libvirt-daemon-kvm qemu-kvm \
+              virt-manager bootc
+            Hyprland --verify-config --i-am-really-stupid \
+              --config /usr/share/bazzite-firebadnofire/hyprland.lua
+            test -x /usr/bin/looking-glass-client
+            test -x /usr/libexec/xdg-desktop-portal-hyprland
+            test -x /usr/libexec/hyprpolkitagent
+            test -x /usr/libexec/bazzite-firebadnofire-start-hyprland
+            test -x /usr/libexec/bazzite-firebadnofire-screenshot
+            test -f /usr/share/wayland-sessions/hyprland.desktop
+            grep -qx "Exec=/usr/libexec/bazzite-firebadnofire-start-hyprland" \
+              /usr/share/wayland-sessions/hyprland.desktop
+            grep -qx "DesktopNames=Hyprland" \
+              /usr/share/wayland-sessions/hyprland.desktop
+            test "$(systemctl is-enabled libvirtd.service)" = enabled
+            test "$(systemctl is-enabled podman.socket)" = enabled
+            ! ldd /usr/bin/looking-glass-client | grep -q "not found"
+          '
+
+      - name: Log in to the Forgejo registry
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          : "${REGISTRY_USERNAME:?configure the REGISTRY_USERNAME repository secret}"
+          : "${REGISTRY_TOKEN:?configure the REGISTRY_TOKEN repository secret}"
+          printf '%s' "${REGISTRY_TOKEN}" | docker login "${IMAGE_REGISTRY}" \
+            --username "${REGISTRY_USERNAME}" --password-stdin
+
+      - name: Publish immutable and stream tags
+        id: publish
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          source bazzite-firebadnofire.env
+          short_sha="${GITHUB_SHA:0:12}"
+          build_date="$(date --utc +%Y%m%d)"
+          image_ref="${IMAGE_REGISTRY}/${IMAGE_PATH}"
+          tags=(
+            "${DEFAULT_TAG}"
+            "${DEFAULT_TAG}-${build_date}-${short_sha}"
+            "sha-${short_sha}"
+          )
+
+          for tag in "${tags[@]}"; do
+            docker tag "${LOCAL_IMAGE}" "${image_ref}:${tag}"
+            docker push "${image_ref}:${tag}"
+          done
+
+          digest="sha256:$(docker buildx imagetools inspect \
+            "${image_ref}:${DEFAULT_TAG}" --raw | sha256sum | awk '{print $1}')"
+          [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "error: registry returned an invalid image digest: ${digest}" >&2
+            exit 1
+          }
+
+          for tag in "${tags[@]}"; do
+            tag_digest="sha256:$(docker buildx imagetools inspect \
+              "${image_ref}:${tag}" --raw | sha256sum | awk '{print $1}')"
+            [[ "${tag_digest}" == "${digest}" ]] || {
+              echo "error: ${image_ref}:${tag} does not resolve to ${digest}" >&2
+              exit 1
+            }
+          done
+
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "image_ref=${image_ref}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install pinned Cosign
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          readonly version=v3.1.2
+          readonly expected=f7622ed3cf22e55e1ae6377c080979ff77a22da9981c11df222a2e444991e7cf
+          curl --fail --location --silent --show-error \
+            --output /tmp/cosign "https://github.com/sigstore/cosign/releases/download/${version}/cosign-linux-amd64"
+          printf '%s  %s\n' "${expected}" /tmp/cosign | sha256sum --check --strict
+          chmod 0755 /tmp/cosign
+          /tmp/cosign version
+
+      - name: Sign and verify the published digest
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          PUBLISHED_IMAGE: ${{ steps.publish.outputs.image_ref }}
+        run: |
+          set -Eeuo pipefail
+          : "${COSIGN_PRIVATE_KEY:?configure the COSIGN_PRIVATE_KEY repository secret}"
+          : "${COSIGN_PASSWORD:?configure the COSIGN_PASSWORD repository secret}"
+          [[ "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+          /tmp/cosign sign --yes \
+            --new-bundle-format=false \
+            --use-signing-config=false \
+            --key env://COSIGN_PRIVATE_KEY \
+            "${PUBLISHED_IMAGE}@${DIGEST}"
+          /tmp/cosign verify --key cosign.pub "${PUBLISHED_IMAGE}@${DIGEST}"
+
+      - name: Log out of registry
+        if: always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: docker logout "${IMAGE_REGISTRY}" || true

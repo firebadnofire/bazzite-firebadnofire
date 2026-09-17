@@ -1,0 +1,25 @@
+#!/usr/bin/bash
+
+set -Eeuo pipefail
+
+: "${HOME:?HOME must be set before starting Hyprland}"
+
+readonly config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
+readonly config_dir="${config_home}/hypr"
+readonly defaults_dir="/usr/share/bazzite-firebadnofire"
+
+install -d -m 0700 "${config_dir}"
+
+# Never replace an operator's Hyprland configuration. A legacy .conf also
+# counts as an existing choice because Hyprland supports both formats.
+if [[ ! -e "${config_dir}/hyprland.lua" && ! -e "${config_dir}/hyprland.conf" ]]; then
+    install -m 0600 "${defaults_dir}/hyprland.lua" "${config_dir}/hyprland.lua"
+fi
+
+for name in hypridle.conf hyprlock.conf; do
+    if [[ ! -e "${config_dir}/${name}" ]]; then
+        install -m 0600 "${defaults_dir}/${name}" "${config_dir}/${name}"
+    fi
+done
+
+exec /usr/bin/Hyprland
