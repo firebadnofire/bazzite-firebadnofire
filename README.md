@@ -484,6 +484,19 @@ provided only to the final unprivileged signing step. If the package becomes
 private later, add the narrowest job-scoped pull credential rather than logging
 the DinD daemon in globally.
 
+bootc-image-builder consumes its source through rootful Podman
+containers-storage even though this Forgejo job is driven by the Docker CLI.
+Each matrix job therefore creates an isolated Docker named volume for
+`/var/lib/containers/storage`, runs the Podman binary already included in the
+pinned bootc-image-builder image to pull the exact digest-pinned source into
+that volume, validates the resulting overlay store, and mounts the populated
+volume into the builder container. The store lives on the same external Docker
+daemon as the builder and is removed after the job. Neither Podman nor a host
+`/var/lib/containers/storage` directory is required in the Actions job or
+Forgejo runner container. A failed build prints Docker-volume, Podman-store,
+stored-image, storage-directory, and filesystem-capacity diagnostics before
+cleanup.
+
 The Anaconda ISO type is a compatibility path in bootc-image-builder and is
 being superseded upstream. A future migration should evaluate the unified
 image-builder and container-based `bootc-installer` flow; this repository does

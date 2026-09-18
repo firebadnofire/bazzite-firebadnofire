@@ -178,6 +178,8 @@ jobs:
             fi
             exit 1
           fi
+          docker info --format \
+            'Docker daemon: version={{.ServerVersion}} storage-driver={{.Driver}} root={{.DockerRootDir}}'
           docker buildx version
           docker run --rm "${DOCKER_SMOKE_IMAGE}"
           docker run --rm --privileged "${BIB_IMAGE}" --version
@@ -193,39 +195,102 @@ jobs:
         run: |
           set -Eeuo pipefail
           [[ "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
-          volume="bib-output-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARTIFACT_TYPE}"
+          source_image="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+          output_volume="bib-output-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARTIFACT_TYPE}"
+          storage_volume="bib-storage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARTIFACT_TYPE}"
           container="bib-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARTIFACT_TYPE}"
           helper="${container}-copy"
+          storage_helper="${container}-storage"
+          diagnostic_helper="${container}-diagnostics"
           cleanup() {
-            for cleanup_container in "${container}" "${helper}"; do
+            for cleanup_container in \
+              "${container}" \
+              "${helper}" \
+              "${storage_helper}" \
+              "${diagnostic_helper}"; do
               if docker container inspect "${cleanup_container}" >/dev/null 2>&1 && \
                 ! docker rm -f "${cleanup_container}" >/dev/null; then
                 echo "warning: could not remove ${cleanup_container}" >&2
               fi
             done
-            if docker volume inspect "${volume}" >/dev/null 2>&1 && \
-              ! docker volume rm "${volume}" >/dev/null; then
-              echo "warning: could not remove ${volume}" >&2
-            fi
+            for cleanup_volume in "${output_volume}" "${storage_volume}"; do
+              if docker volume inspect "${cleanup_volume}" >/dev/null 2>&1 && \
+                ! docker volume rm "${cleanup_volume}" >/dev/null; then
+                echo "warning: could not remove ${cleanup_volume}" >&2
+              fi
+            done
           }
-          trap cleanup EXIT
+          diagnose_storage() {
+            if ! docker volume inspect "${storage_volume}"; then
+              echo "error: Docker storage volume is unavailable: ${storage_volume}" >&2
+              return 1
+            fi
+            docker run --rm --name "${diagnostic_helper}" \
+              --privileged \
+              --network host \
+              --security-opt label=type:unconfined_t \
+              --env "SOURCE_IMAGE=${source_image}" \
+              --volume "${storage_volume}:/var/lib/containers/storage" \
+              --entrypoint /usr/bin/bash \
+              "${BIB_IMAGE}" -c '
+                set -Eeuo pipefail
+                echo "Podman store diagnostics:"
+                podman info --debug
+                echo "Stored images:"
+                podman images --digests --no-trunc
+                podman image exists "${SOURCE_IMAGE}"
+                podman image inspect --format \
+                  "id={{.Id}} digest={{.Digest}}" "${SOURCE_IMAGE}"
+                test -d /var/lib/containers/storage/overlay
+                echo "Storage directories:"
+                find /var/lib/containers/storage \
+                  -mindepth 1 -maxdepth 2 -type d -print | sort | sed -n '1,80p'
+                df -hT /var/lib/containers/storage
+              '
+          }
+          on_exit() {
+            status=$?
+            if [[ "${status}" -ne 0 ]] && \
+              docker volume inspect "${storage_volume}" >/dev/null 2>&1; then
+              echo "error: disk build failed; collecting container-storage diagnostics" >&2
+              if ! diagnose_storage; then
+                echo "warning: container-storage diagnostics also failed" >&2
+              fi
+            fi
+            cleanup
+            exit "${status}"
+          }
+          trap on_exit EXIT
 
-          docker volume create "${volume}" >/dev/null
+          docker volume create "${output_volume}" >/dev/null
+          docker volume create "${storage_volume}" >/dev/null
+
+          echo "Initializing rootful Podman storage with ${source_image}"
+          docker run --rm --name "${storage_helper}" \
+            --privileged \
+            --network host \
+            --security-opt label=type:unconfined_t \
+            --volume "${storage_volume}:/var/lib/containers/storage" \
+            --entrypoint /usr/bin/podman \
+            "${BIB_IMAGE}" pull "${source_image}"
+          diagnose_storage
+
           docker create --name "${container}" \
             --privileged \
             --network host \
             --security-opt label=type:unconfined_t \
-            --volume "${volume}:/output" \
+            --volume "${output_volume}:/output" \
+            --volume "${storage_volume}:/var/lib/containers/storage" \
             "${BIB_IMAGE}" \
             --type "${ARTIFACT_TYPE}" \
             --rootfs btrfs \
             --use-librepo=true \
-            "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}" >/dev/null
+            "${source_image}" >/dev/null
           docker cp "${CONFIG_FILE}" "${container}:/config.toml"
           docker start --attach "${container}"
 
           mkdir -p output release-input
-          docker create --name "${helper}" --volume "${volume}:/output:ro" \
+          docker create --name "${helper}" --volume "${output_volume}:/output:ro" \
             --entrypoint /usr/bin/true "${BIB_IMAGE}" >/dev/null
           docker cp "${helper}:/output/." output/
 
