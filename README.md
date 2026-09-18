@@ -200,8 +200,8 @@ the job is x86_64 and can reach a working Docker daemon and Docker Buildx.
 That label launches a minimal `ubuntu:22.04` job container, not a preloaded
 GitHub-hosted-runner image. Each workflow therefore installs the Jammy Docker
 CLI/Buildx and performs an exact-ref shell checkout of this public repository.
-The disk job also installs checksum-pinned Node.js 24 LTS because Forgejo's
-artifact uploader is a Node action. This avoids assuming that `node`, `git`, or
+The disk workflow bootstrap also includes checksum-pinned Node.js 24 LTS.
+This avoids assuming that `node`, `git`, or
 `docker` already exists inside the job container. Docker operations still
 require the runner administrator to expose a dedicated external DinD daemon.
 
@@ -462,12 +462,34 @@ build jobs. The matrix produces:
 - `SHA256SUMS` covering those two files;
 - one matching `.asc` detached OpenPGP signature for each of the three files.
 
-The matrix outputs are retained as uncompressed Actions artifacts for seven
-days only as an internal job handoff. An unprivileged final job assembles the
-two files, creates and verifies `SHA256SUMS`, imports the pinned signing key into
+The matrix outputs are staged in separate Docker named volumes on the
+dedicated DinD daemon, not uploaded to Actions artifact storage. Volume names
+are scoped to repository, run ID, attempt, and format; labels bind them to the
+full revision and OCI digest. The prepare job records the daemon ID, which all
+producers and the release consumer must match. A different daemon fails closed.
+The current single `opensuse-server` runner needs no configuration change. If
+more runners gain the `ubuntu-22.04` label, assign all jobs in this workflow a
+dedicated label backed by the same daemon before using this handoff.
+
+Only after **both** matrix builds succeed, an unprivileged final job copies the
+volumes through stopped, read-only-mounted helper containers, verifies each
+handoff SHA256, creates and verifies the final `SHA256SUMS`, imports the signing key into
 an isolated temporary GnuPG home, creates and verifies all three signatures,
 checks that the release directory contains exactly the expected six files, and
 publishes them with the official Forgejo release action pinned by commit.
+That action creates a draft, uploads all six assets, and only then publishes
+it. Private keys and release credentials never enter handoff volumes or helper
+containers. Docker-daemon access remains a privileged trust boundary; volume
+labels/checksums prevent accidental mixing, not attacks by another daemon admin.
+
+Cleanup runs on success or failure and removes only this attempt's validated
+handoff volumes. A runner crash, cancellation, failed checkout, or changed
+daemon can prevent cleanup; these are ephemeral staging volumes, not a
+seven-day artifact archive. Plan for both payloads plus local copy overhead on
+the DinD/job filesystems. The only large network upload is the final Release
+upload, whose proxy limits still need to accommodate the complete file.
+See [artifact finalization troubleshooting and handoff tests](docs/disk-artifact-handoff.md)
+for server logs, cleanup guidance, and verification commands.
 
 The permanent release/tag is
 `disk-<12-character-commit>-<12-character-digest>`. Re-running with the same

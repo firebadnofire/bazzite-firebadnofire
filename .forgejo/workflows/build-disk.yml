@@ -21,6 +21,7 @@ jobs:
       contents: read
     outputs:
       image_digest: ${{ steps.image.outputs.digest }}
+      daemon_id: ${{ steps.image.outputs.daemon_id }}
 
     steps:
       - name: Bootstrap Docker tooling
@@ -70,6 +71,9 @@ jobs:
           }
           docker buildx imagetools inspect "${IMAGE_REPOSITORY}@${digest}" >/dev/null
           echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          daemon_id="$(docker info --format '{{.ID}}')"
+          [[ -n "${daemon_id}" ]]
+          echo "daemon_id=${daemon_id}" >> "${GITHUB_OUTPUT}"
           echo "Disk artifacts will use ${IMAGE_REPOSITORY}@${digest}"
 
   disk:
@@ -183,6 +187,13 @@ jobs:
           docker buildx version
           docker run --rm "${DOCKER_SMOKE_IMAGE}"
           docker run --rm --privileged "${BIB_IMAGE}" --version
+
+      - name: Verify the shared handoff daemon before building
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ needs.prepare.outputs.image_digest }}
+          HANDOFF_DAEMON_ID: ${{ needs.prepare.outputs.daemon_id }}
+        run: bash scripts/disk-handoff.sh check
 
       - name: Build ${{ matrix.artifact }}
         shell: bash
@@ -304,21 +315,25 @@ jobs:
           install -m 0644 "${OUTPUT_SOURCE}" \
             "release-input/bazzite-firebadnofire-${short_sha}-${digest_hex:0:12}.${OUTPUT_EXTENSION}"
 
-      - name: Upload ${{ matrix.artifact }} for release assembly
-        uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
-        with:
-          name: disk-${{ matrix.artifact }}
-          path: release-input/
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
+      - name: Stage ${{ matrix.artifact }} on the dedicated Docker daemon
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ needs.prepare.outputs.image_digest }}
+          HANDOFF_DAEMON_ID: ${{ needs.prepare.outputs.daemon_id }}
+          OUTPUT_EXTENSION: ${{ matrix.extension }}
+        run: bash scripts/disk-handoff.sh stage "${OUTPUT_EXTENSION}"
 
   release:
     name: Sign and publish Forgejo release
     needs: [prepare, disk]
+    # Still run cleanup after a failed matrix build; publication is gated below.
+    if: ${{ always() && needs.prepare.result == 'success' }}
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+    env:
+      IMAGE_DIGEST: ${{ needs.prepare.outputs.image_digest }}
+      HANDOFF_DAEMON_ID: ${{ needs.prepare.outputs.daemon_id }}
 
     steps:
       - name: Bootstrap release tooling
@@ -337,6 +352,7 @@ jobs:
           ${SUDO} apt-get install -y --no-install-recommends \
             ca-certificates \
             curl \
+            docker.io \
             git \
             gnupg \
             jq \
@@ -373,12 +389,17 @@ jobs:
           git checkout --detach "${GITHUB_SHA}"
           [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]]
 
-      - name: Download all disk outputs
-        uses: https://code.forgejo.org/forgejo/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
-        with:
-          pattern: disk-*
-          path: release
-          merge-multiple: true
+      - name: Require both matrix builds and verify local handoff
+        shell: bash
+        env:
+          DISK_RESULT: ${{ needs.disk.result }}
+        run: |
+          set -Eeuo pipefail
+          [[ "${DISK_RESULT}" == success ]] || {
+            echo "error: both matrix builds must succeed before signing or publishing" >&2
+            exit 1
+          }
+          bash scripts/disk-handoff.sh collect
 
       - name: Assemble and checksum the release
         id: metadata
@@ -520,3 +541,8 @@ jobs:
           release-notes-file: release-notes.md
           override: true
           hide-archive-link: true
+
+      - name: Clean up this run's disk handoff volumes
+        if: ${{ always() }}
+        shell: bash
+        run: bash scripts/disk-handoff.sh cleanup

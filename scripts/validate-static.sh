@@ -25,6 +25,8 @@ for file in "${required_files[@]}"; do
 done
 
 bash -n \
+    scripts/disk-handoff.sh \
+    scripts/test-disk-handoff.sh \
     build_files/fix-terra-mesa-keys.sh \
     build_files/build.sh \
     scripts/sign-release-artifacts.sh \
@@ -39,6 +41,8 @@ for command_name in python3 rg shellcheck; do
     }
 done
 shellcheck \
+    scripts/disk-handoff.sh \
+    scripts/test-disk-handoff.sh \
     build_files/fix-terra-mesa-keys.sh \
     build_files/build.sh \
     scripts/sign-release-artifacts.sh \
@@ -117,12 +121,32 @@ for required in (
     "GPG_KEY_PASSWORD: ${{ secrets.GPG_KEY_PASSWORD }}",
     "bash scripts/sign-release-artifacts.sh release",
     "SHA256SUMS.asc",
+    "bash scripts/disk-handoff.sh collect",
+    "bash scripts/disk-handoff.sh cleanup",
+    "both matrix builds must succeed before signing or publishing",
     "actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd",
 ):
     if required not in disk_workflow:
         raise ValueError(f"build-disk.yml: missing release contract: {required}")
 
 disk_document = yaml.safe_load(disk_workflow)
+if "upload-artifact@" in disk_workflow or "download-artifact@" in disk_workflow:
+    raise ValueError("build-disk.yml: disk payloads must not round-trip through Actions artifacts")
+release = disk_document["jobs"]["release"]
+if set(release["needs"]) != {"prepare", "disk"}:
+    raise ValueError("build-disk.yml: release must depend on prepare and the whole disk matrix")
+steps = release["steps"]
+gate = next(i for i, step in enumerate(steps) if "disk-handoff.sh collect" in step.get("run", ""))
+sign = next(i for i, step in enumerate(steps) if "sign-release-artifacts.sh" in step.get("run", ""))
+publish = next(i for i, step in enumerate(steps) if "forgejo-release@" in step.get("uses", ""))
+if not gate < sign < publish:
+    raise ValueError("build-disk.yml: handoff verification must precede signing and publication")
+if steps[gate].get("env", {}).get("DISK_RESULT") != "${{ needs.disk.result }}":
+    raise ValueError("build-disk.yml: release must check the actual matrix result")
+if '[[ "${DISK_RESULT}" == success ]]' not in steps[gate]["run"]:
+    raise ValueError("build-disk.yml: failed matrix must block publication")
+if steps[-1].get("if") != "${{ always() }}" or "disk-handoff.sh cleanup" not in steps[-1].get("run", ""):
+    raise ValueError("build-disk.yml: final handoff cleanup must run on failures too")
 privileged_job = yaml.safe_dump(disk_document["jobs"]["disk"])
 if "secrets." in privileged_job:
     raise ValueError("build-disk.yml: privileged disk job must not receive secrets")
