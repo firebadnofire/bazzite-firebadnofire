@@ -497,6 +497,55 @@ Forgejo runner container. A failed build prints Docker-volume, Podman-store,
 stored-image, storage-directory, and filesystem-capacity diagnostics before
 cleanup.
 
+### Terra Mesa repository keys
+
+Bazzite supplies `/etc/yum.repos.d/terra-mesa.repo` through
+`terra-release-mesa`; `terra-gpg-keys` supplies
+`/etc/pki/rpm-gpg/RPM-GPG-KEY-terra44-mesa`. The inspected published Fedora 44
+image already contained this key. The manifest depsolver's metadata verifier
+can resolve the repo's absolute `file://` key URL against the **builder** root
+instead of the source image root, producing a misleading missing-key error.
+
+At the end of image construction, `build_files/fix-terra-mesa-keys.sh` changes
+only the Mesa and Mesa-source GPG-key locations to Terra's official
+`https://repos.fyralabs.com/terra$releasever-mesa/key.asc` (and `-mesa-source`)
+endpoints. It first requires each downloaded key to match the packaged local
+key byte-for-byte; missing keys or key rotations fail the build for review.
+The local files remain installed. Repo enablement, package `gpgcheck=1`, and
+metadata `repo_gpgcheck=1` are preserved. HTTPS certificate verification stays
+enabled. Subsequent depsolving depends on Terra's HTTPS endpoint and its key
+distribution, rather than a builder-local key file; no runner changes are needed.
+
+`build_files/validate-repo-keys.py` then checks every enabled section in
+`/etc/yum.repos.d/*.repo`, expanding Fedora/architecture and DNF vars and failing
+on unresolved variables or missing, empty, or unreadable local GPG-key files.
+It conservatively checks the on-disk `enabled` setting even if DNF5 overrides
+disable a repo, because other solvers may not consume those overrides. This
+gate checks source-image completeness; the HTTPS repair separately addresses
+the builder-root mismatch. Offline regression tests run with `just validate`.
+
+Verify on Linux after applying the change:
+
+```bash
+just validate
+just build
+podman run --rm --entrypoint /usr/bin/bash localhost/bazzite-firebadnofire:stable -c '
+  set -Eeuo pipefail
+  cat /etc/yum.repos.d/terra-mesa.repo
+  rpm -qf /etc/yum.repos.d/terra-mesa.repo /etc/pki/rpm-gpg/RPM-GPG-KEY-terra44-mesa
+  test -s /etc/pki/rpm-gpg/RPM-GPG-KEY-terra44-mesa
+  dnf5 -y --repo=terra-mesa --refresh makecache
+'
+```
+
+Then publish the changed image via **Actions → Validate, build, publish, and sign → Run workflow**
+on `main`, wait for publication and signature verification to succeed, and
+dispatch **Build and release disk artifacts**. Confirm its resolved digest is
+the new image digest and both `qcow2` and `installer-iso` pass manifest
+generation, artifact validation, signing, and release verification. Rerunning
+the disk workflow against the old image cannot pick up this image-side fix.
+Local metadata verification alone does not prove either disk build or VM boot.
+
 The Anaconda ISO type is a compatibility path in bootc-image-builder and is
 being superseded upstream. A future migration should evaluate the unified
 image-builder and container-based `bootc-installer` flow; this repository does

@@ -25,6 +25,7 @@ for file in "${required_files[@]}"; do
 done
 
 bash -n \
+    build_files/fix-terra-mesa-keys.sh \
     build_files/build.sh \
     scripts/sign-release-artifacts.sh \
     scripts/validate-static.sh \
@@ -38,11 +39,14 @@ for command_name in python3 rg shellcheck; do
     }
 done
 shellcheck \
+    build_files/fix-terra-mesa-keys.sh \
     build_files/build.sh \
     scripts/sign-release-artifacts.sh \
     scripts/validate-static.sh \
     system_files/usr/libexec/bazzite-firebadnofire-screenshot \
     system_files/usr/libexec/bazzite-firebadnofire-start-hyprland
+
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-repo-keys.py
 
 python3 - <<'PY'
 from pathlib import Path

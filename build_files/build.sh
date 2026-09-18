@@ -132,4 +132,9 @@ test "$(systemctl is-enabled plasmalogin.service)" = "enabled"
 test "$(readlink -f /etc/systemd/system/display-manager.service)" = \
     /usr/lib/systemd/system/plasmalogin.service
 
+# Run after all RPM transactions and overlays so package updates cannot undo
+# the solver-compatible URLs. Keep the packaged public keys in the image.
+bash /ctx/fix-terra-mesa-keys.sh
+python3 /ctx/validate-repo-keys.py
+
 dnf5 clean all
