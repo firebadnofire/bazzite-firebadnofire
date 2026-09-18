@@ -1,5 +1,5 @@
 ---
-name: Build disk artifacts
+name: Build and release disk artifacts
 
 on:
   workflow_dispatch:
@@ -9,13 +9,72 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE_REF: pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable
+  IMAGE_REPOSITORY: pubcode.archuser.org/universalblue/bazzite-firebadnofire
   BIB_IMAGE: quay.io/centos-bootc/bootc-image-builder:latest@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b
   DOCKER_SMOKE_IMAGE: docker.io/library/hello-world:latest@sha256:5e23090353324d887c48ad5e5c56d294eab81588df9605b07d1afe895f9cc8f8
 
 jobs:
+  prepare:
+    name: Resolve stable image digest
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      image_digest: ${{ steps.image.outputs.digest }}
+
+    steps:
+      - name: Bootstrap Docker tooling
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if command -v sudo >/dev/null; then
+            SUDO=sudo
+          elif [[ "$(id -u)" == 0 ]]; then
+            SUDO=""
+          else
+            echo "error: the bare Ubuntu job needs sudo or a root user" >&2
+            exit 1
+          fi
+          ${SUDO} apt-get update
+          ${SUDO} apt-get install -y --no-install-recommends \
+            ca-certificates \
+            docker-buildx \
+            docker.io \
+            python3
+
+      - name: Verify Docker access
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$(uname -m)" == "x86_64" ]] || {
+            echo "error: disk artifacts only support x86_64" >&2
+            exit 1
+          }
+          docker info >/dev/null
+          docker buildx version
+          docker run --rm "${DOCKER_SMOKE_IMAGE}"
+
+      - name: Resolve the stable image digest
+        id: image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          manifest_json="$(docker buildx imagetools inspect \
+            "${IMAGE_REPOSITORY}:stable" --format '{{json .Manifest}}')"
+          digest="$(python3 -c \
+            'import json, sys; print(json.load(sys.stdin)["digest"])' \
+            <<<"${manifest_json}")"
+          [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "error: registry returned an invalid stable digest: ${digest}" >&2
+            exit 1
+          }
+          docker buildx imagetools inspect "${IMAGE_REPOSITORY}@${digest}" >/dev/null
+          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          echo "Disk artifacts will use ${IMAGE_REPOSITORY}@${digest}"
+
   disk:
     name: ${{ matrix.artifact }} (x86_64)
+    needs: prepare
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -26,9 +85,13 @@ jobs:
           - artifact: qcow2
             type: qcow2
             config: disk_config/disk.toml
+            source: output/qcow2/disk.qcow2
+            extension: qcow2
           - artifact: installer-iso
             type: anaconda-iso
             config: disk_config/iso.toml
+            source: output/bootiso/install.iso
+            extension: iso
 
     steps:
       - name: Bootstrap the bare Ubuntu runner
@@ -124,8 +187,12 @@ jobs:
         env:
           ARTIFACT_TYPE: ${{ matrix.type }}
           CONFIG_FILE: ${{ matrix.config }}
+          IMAGE_DIGEST: ${{ needs.prepare.outputs.image_digest }}
+          OUTPUT_EXTENSION: ${{ matrix.extension }}
+          OUTPUT_SOURCE: ${{ matrix.source }}
         run: |
           set -Eeuo pipefail
+          [[ "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
           volume="bib-output-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARTIFACT_TYPE}"
           container="bib-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARTIFACT_TYPE}"
           helper="${container}-copy"
@@ -153,23 +220,238 @@ jobs:
             --type "${ARTIFACT_TYPE}" \
             --rootfs btrfs \
             --use-librepo=true \
-            "${IMAGE_REF}" >/dev/null
+            "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}" >/dev/null
           docker cp "${CONFIG_FILE}" "${container}:/config.toml"
           docker start --attach "${container}"
 
-          mkdir -p output
+          mkdir -p output release-input
           docker create --name "${helper}" --volume "${volume}:/output:ro" \
             --entrypoint /usr/bin/true "${BIB_IMAGE}" >/dev/null
           docker cp "${helper}:/output/." output/
 
-          find output -type f -print0 | sort -z | xargs -0 sha256sum > output/SHA256SUMS
-          test -s output/SHA256SUMS
+          [[ -s "${OUTPUT_SOURCE}" ]] || {
+            echo "error: bootc-image-builder did not produce ${OUTPUT_SOURCE}" >&2
+            find output -maxdepth 3 -type f -print >&2
+            exit 1
+          }
+          short_sha="${GITHUB_SHA:0:12}"
+          digest_hex="${IMAGE_DIGEST#sha256:}"
+          install -m 0644 "${OUTPUT_SOURCE}" \
+            "release-input/bazzite-firebadnofire-${short_sha}-${digest_hex:0:12}.${OUTPUT_EXTENSION}"
 
-      - name: Upload ${{ matrix.artifact }}
+      - name: Upload ${{ matrix.artifact }} for release assembly
         uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e # v4
         with:
-          name: bazzite-firebadnofire-${{ matrix.artifact }}-${{ github.sha }}
-          path: output/
+          name: disk-${{ matrix.artifact }}
+          path: release-input/
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
           compression-level: 0
+
+  release:
+    name: Sign and publish Forgejo release
+    needs: [prepare, disk]
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+
+    steps:
+      - name: Bootstrap release tooling
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if command -v sudo >/dev/null; then
+            SUDO=sudo
+          elif [[ "$(id -u)" == 0 ]]; then
+            SUDO=""
+          else
+            echo "error: the bare Ubuntu job needs sudo or a root user" >&2
+            exit 1
+          fi
+          ${SUDO} apt-get update
+          ${SUDO} apt-get install -y --no-install-recommends \
+            ca-certificates \
+            curl \
+            git \
+            gnupg \
+            jq \
+            xz-utils
+
+          readonly node_version=v24.17.0
+          readonly node_archive="node-${node_version}-linux-x64.tar.xz"
+          readonly node_sha256=ab343a1b747c7cbf3630dfd7dbf818c5423fab2eb4f5ad1afc896f6bd121a917
+          curl --fail --location --silent --show-error \
+            --output "/tmp/${node_archive}" \
+            "https://nodejs.org/dist/${node_version}/${node_archive}"
+          printf '%s  %s\n' "${node_sha256}" "/tmp/${node_archive}" | \
+            sha256sum --check --strict
+          ${SUDO} tar --extract --xz --file "/tmp/${node_archive}" \
+            --directory /usr/local --strip-components=1
+          node --version
+
+      - name: Check out the exact triggering revision
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          : "${GITHUB_WORKSPACE:?Forgejo did not provide GITHUB_WORKSPACE}"
+          : "${GITHUB_REF:?Forgejo did not provide GITHUB_REF}"
+          : "${GITHUB_SHA:?Forgejo did not provide GITHUB_SHA}"
+          repository="${GITHUB_SERVER_URL:-https://pubcode.archuser.org}/${GITHUB_REPOSITORY:-universalblue/bazzite-firebadnofire}.git"
+          cd "${GITHUB_WORKSPACE}"
+          git init
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "${repository}"
+          else
+            git remote add origin "${repository}"
+          fi
+          git fetch --no-tags --depth=1 origin "${GITHUB_REF}"
+          git checkout --detach "${GITHUB_SHA}"
+          [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]]
+
+      - name: Download all disk outputs
+        uses: https://code.forgejo.org/forgejo/download-artifact@d8d0a99033603453ad2255e58720b460a0555e1e # v4
+        with:
+          pattern: disk-*
+          path: release
+          merge-multiple: true
+
+      - name: Assemble and checksum the release
+        id: metadata
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ needs.prepare.outputs.image_digest }}
+        run: |
+          set -Eeuo pipefail
+          short_sha="${GITHUB_SHA:0:12}"
+          digest_hex="${IMAGE_DIGEST#sha256:}"
+          release_id="${short_sha}-${digest_hex:0:12}"
+          qcow2="bazzite-firebadnofire-${release_id}.qcow2"
+          iso="bazzite-firebadnofire-${release_id}.iso"
+          [[ -s "release/${qcow2}" ]]
+          [[ -s "release/${iso}" ]]
+
+          mapfile -d '' -t payloads < <(
+            find release -maxdepth 1 -type f -print0 | sort -z
+          )
+          [[ "${#payloads[@]}" -eq 2 ]] || {
+            echo "error: expected exactly the QCOW2 and ISO before signing" >&2
+            find release -maxdepth 1 -type f -print >&2
+            exit 1
+          }
+
+          (
+            cd release
+            sha256sum "${qcow2}" "${iso}" > SHA256SUMS
+            sha256sum --check --strict SHA256SUMS
+          )
+          [[ "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "release_id=${release_id}" >> "${GITHUB_OUTPUT}"
+
+      - name: Sign and verify every downloadable artifact
+        shell: bash
+        env:
+          GPG_KEY_B64: ${{ secrets.GPG_KEY_B64 }}
+          GPG_KEY_PASSWORD: ${{ secrets.GPG_KEY_PASSWORD }}
+        run: bash scripts/sign-release-artifacts.sh release
+
+      - name: Verify release completeness and write release notes
+        shell: bash
+        env:
+          IMAGE_DIGEST: ${{ needs.prepare.outputs.image_digest }}
+        run: |
+          set -Eeuo pipefail
+          short_sha="${GITHUB_SHA:0:12}"
+          digest_hex="${IMAGE_DIGEST#sha256:}"
+          release_id="${short_sha}-${digest_hex:0:12}"
+          expected=(
+            "bazzite-firebadnofire-${release_id}.qcow2"
+            "bazzite-firebadnofire-${release_id}.qcow2.asc"
+            "bazzite-firebadnofire-${release_id}.iso"
+            "bazzite-firebadnofire-${release_id}.iso.asc"
+            "SHA256SUMS"
+            "SHA256SUMS.asc"
+          )
+          for asset in "${expected[@]}"; do
+            [[ -s "release/${asset}" ]] || {
+              echo "error: required signed release asset is missing: ${asset}" >&2
+              exit 1
+            }
+          done
+          mapfile -d '' -t release_files < <(
+            find release -maxdepth 1 -type f -print0 | sort -z
+          )
+          [[ "${#release_files[@]}" -eq "${#expected[@]}" ]] || {
+            echo "error: release directory contains an unexpected asset" >&2
+            find release -maxdepth 1 -type f -print >&2
+            exit 1
+          }
+
+          cat > release-notes.md <<EOF
+          # bazzite-firebadnofire disk artifacts
+
+          This release contains x86_64 QCOW2 and Anaconda installer ISO artifacts
+          generated from the published OCI image at this exact digest:
+
+              ${IMAGE_REPOSITORY}@${IMAGE_DIGEST}
+
+          Repository revision: ${GITHUB_SHA}
+
+          SHA256SUMS covers both disk artifacts. Each QCOW2, ISO, and SHA256SUMS
+          file has its own detached ASCII-armored OpenPGP signature (.asc).
+
+          ## Signature Verification
+
+          The expected signing identity is William Jones (Yubikey generated GPG key).
+          The expected full fingerprint is:
+
+              7D6E F134 D851 C8DA 0862 D974 94F3 1AF3 74E2 EE3C
+
+          Import from a keyserver:
+
+              gpg --keyserver hkps://keys.openpgp.org --recv-keys 7D6EF134D851C8DA0862D97494F31AF374E2EE3C
+              gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys 7D6EF134D851C8DA0862D97494F31AF374E2EE3C
+
+          Or import https://archuser.org/gpg/william.asc directly. Public keys are
+          also available from https://github.com/firebadnofire.gpg and
+          https://archuser.org/gpg.key.
+
+          On Windows, Kleopatra is included with Gpg4win. Install it from
+          https://www.gpg4win.org/ or with:
+
+              winget install GnuPG.Gpg4win
+
+          A PowerShell direct-import example is:
+
+              Invoke-WebRequest -Uri 'https://archuser.org/gpg/william.asc' -OutFile 'william.asc'
+              gpg --import .\william.asc
+
+          Verify the full fingerprint before trusting a signature:
+
+              gpg --fingerprint 7D6EF134D851C8DA0862D97494F31AF374E2EE3C
+              gpg --verify ./<artifact>.asc ./<artifact>
+
+          A Good signature message alone is not sufficient; the key must match the
+          complete expected fingerprint above.
+
+          Cosign is separate from these file signatures. Cosign authenticates the
+          published OCI image digest; the OpenPGP .asc files authenticate these
+          downloadable disk artifacts. After cloning this repository, verify the
+          OCI digest with its checked-in cosign.pub key:
+
+              cosign verify --key cosign.pub ${IMAGE_REPOSITORY}@${IMAGE_DIGEST}
+          EOF
+
+      - name: Publish the Forgejo release
+        uses: https://code.forgejo.org/actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd # v2.13.4
+        with:
+          direction: upload
+          url: ${{ forgejo.server_url }}
+          repo: ${{ forgejo.repository }}
+          token: ${{ forgejo.token }}
+          tag: disk-${{ steps.metadata.outputs.release_id }}
+          title: bazzite-firebadnofire disk ${{ steps.metadata.outputs.release_id }}
+          sha: ${{ github.sha }}
+          release-dir: release
+          release-notes-file: release-notes.md
+          override: true
+          hide-archive-link: true

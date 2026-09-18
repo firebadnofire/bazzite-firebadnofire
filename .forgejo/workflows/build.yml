@@ -8,6 +8,8 @@ on:
     branches: [main]
     paths-ignore:
       - "**/*.md"
+  schedule:
+    - cron: "17 4 * * *"
   workflow_dispatch:
 
 concurrency:
@@ -168,7 +170,7 @@ jobs:
           '
 
       - name: Log in to the Forgejo registry
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         shell: bash
         env:
           REGISTRY_USERNAME: firebadnofire
@@ -184,52 +186,42 @@ jobs:
             exit 1
           fi
 
-      - name: Publish immutable and stream tags
+      - name: Push the commit traceability tag and resolve its canonical digest
         id: publish
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         shell: bash
         run: |
           set -Eeuo pipefail
           source bazzite-firebadnofire.env
           short_sha="${GITHUB_SHA:0:12}"
-          build_date="$(date --utc +%Y%m%d)"
           image_ref="${IMAGE_REGISTRY}/${IMAGE_PATH}"
-          tags=(
-            "${DEFAULT_TAG}"
-            "${DEFAULT_TAG}-${build_date}-${short_sha}"
-            "sha-${short_sha}"
-          )
+          traceability_tag="sha-${short_sha}"
 
-          for tag in "${tags[@]}"; do
-            docker tag "${LOCAL_IMAGE}" "${image_ref}:${tag}"
-            if ! docker push "${image_ref}:${tag}"; then
-              echo "error: registry push failed for ${image_ref}:${tag}" >&2
-              echo "error: verify REGISTRY_TOKEN has write:package scope and its owner may publish packages for universalblue" >&2
-              exit 1
-            fi
-          done
+          docker tag "${LOCAL_IMAGE}" "${image_ref}:${traceability_tag}"
+          if ! docker push "${image_ref}:${traceability_tag}"; then
+            echo "error: registry push failed for ${image_ref}:${traceability_tag}" >&2
+            echo "error: verify REGISTRY_TOKEN has write:package scope and its owner may publish packages for universalblue" >&2
+            exit 1
+          fi
 
-          digest="sha256:$(docker buildx imagetools inspect \
-            "${image_ref}:${DEFAULT_TAG}" --raw | sha256sum | awk '{print $1}')"
+          manifest_json="$(docker buildx imagetools inspect \
+            "${image_ref}:${traceability_tag}" --format '{{json .Manifest}}')"
+          digest="$(python3 -c \
+            'import json, sys; print(json.load(sys.stdin)["digest"])' \
+            <<<"${manifest_json}")"
           [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
             echo "error: registry returned an invalid image digest: ${digest}" >&2
             exit 1
           }
 
-          for tag in "${tags[@]}"; do
-            tag_digest="sha256:$(docker buildx imagetools inspect \
-              "${image_ref}:${tag}" --raw | sha256sum | awk '{print $1}')"
-            [[ "${tag_digest}" == "${digest}" ]] || {
-              echo "error: ${image_ref}:${tag} does not resolve to ${digest}" >&2
-              exit 1
-            }
-          done
-
-          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
-          echo "image_ref=${image_ref}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "digest=${digest}"
+            echo "image_ref=${image_ref}"
+            echo "traceability_tag=${traceability_tag}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Install pinned Cosign
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -242,7 +234,7 @@ jobs:
           /tmp/cosign version
 
       - name: Sign and verify the published digest
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         shell: bash
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
@@ -262,8 +254,54 @@ jobs:
             "${PUBLISHED_IMAGE}@${DIGEST}"
           /tmp/cosign verify --key cosign.pub "${PUBLISHED_IMAGE}@${DIGEST}"
 
+      - name: Publish stream and immutable tags
+        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          PUBLISHED_IMAGE: ${{ steps.publish.outputs.image_ref }}
+          TRACEABILITY_TAG: ${{ steps.publish.outputs.traceability_tag }}
+        run: |
+          set -Eeuo pipefail
+          source bazzite-firebadnofire.env
+          short_sha="${GITHUB_SHA:0:12}"
+          build_date="$(date --utc +%Y%m%d)"
+          digest_hex="${DIGEST#sha256:}"
+          immutable_tag="${DEFAULT_TAG}-${build_date}-${short_sha}-${digest_hex:0:12}"
+          tags=("${immutable_tag}" "${DEFAULT_TAG}")
+
+          [[ "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          for tag in "${tags[@]}"; do
+            docker tag "${LOCAL_IMAGE}" "${PUBLISHED_IMAGE}:${tag}"
+            if ! docker push "${PUBLISHED_IMAGE}:${tag}"; then
+              echo "error: registry push failed for ${PUBLISHED_IMAGE}:${tag}" >&2
+              exit 1
+            fi
+          done
+
+          resolve_digest() {
+            local reference="$1"
+            local manifest_json
+            manifest_json="$(docker buildx imagetools inspect \
+              "${reference}" --format '{{json .Manifest}}')"
+            python3 -c \
+              'import json, sys; print(json.load(sys.stdin)["digest"])' \
+              <<<"${manifest_json}"
+          }
+
+          for tag in "${TRACEABILITY_TAG}" "${tags[@]}"; do
+            tag_digest="$(resolve_digest "${PUBLISHED_IMAGE}:${tag}")"
+            [[ "${tag_digest}" == "${DIGEST}" ]] || {
+              echo "error: ${PUBLISHED_IMAGE}:${tag} resolves to ${tag_digest}, expected ${DIGEST}" >&2
+              exit 1
+            }
+          done
+
+          /tmp/cosign verify --key cosign.pub "${PUBLISHED_IMAGE}@${DIGEST}"
+          echo "Published immutable tag: ${PUBLISHED_IMAGE}:${immutable_tag}"
+
       - name: Log out of registry
-        if: always() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: always() && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         shell: bash
         run: |
           if ! command -v docker >/dev/null; then

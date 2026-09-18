@@ -11,6 +11,7 @@ required_files=(
     cosign.pub
     disk_config/disk.toml
     disk_config/iso.toml
+    scripts/sign-release-artifacts.sh
     system_files/usr/lib/tmpfiles.d/bazzite-firebadnofire.conf
     system_files/usr/share/bazzite-firebadnofire/hyprland.lua
     system_files/usr/share/wayland-sessions/hyprland.desktop
@@ -25,6 +26,7 @@ done
 
 bash -n \
     build_files/build.sh \
+    scripts/sign-release-artifacts.sh \
     scripts/validate-static.sh \
     system_files/usr/libexec/bazzite-firebadnofire-screenshot \
     system_files/usr/libexec/bazzite-firebadnofire-start-hyprland
@@ -37,6 +39,7 @@ for command_name in python3 rg shellcheck; do
 done
 shellcheck \
     build_files/build.sh \
+    scripts/sign-release-artifacts.sh \
     scripts/validate-static.sh \
     system_files/usr/libexec/bazzite-firebadnofire-screenshot \
     system_files/usr/libexec/bazzite-firebadnofire-start-hyprland
@@ -84,6 +87,47 @@ for path in sorted(Path(".forgejo/workflows").glob("*.yml")):
                     text=True,
                     check=True,
                 )
+                subprocess.run(
+                    ["shellcheck", "--shell=bash", "--exclude=SC1091", "-"],
+                    input=script,
+                    text=True,
+                    check=True,
+                )
+
+image_workflow = Path(".forgejo/workflows/build.yml").read_text(encoding="utf-8")
+for required in (
+    'cron: "17 4 * * *"',
+    "github.event_name == 'schedule'",
+    "--format '{{json .Manifest}}'",
+    "cosign verify --key cosign.pub",
+):
+    if required not in image_workflow:
+        raise ValueError(f"build.yml: missing production contract: {required}")
+if "--raw | sha256sum" in image_workflow:
+    raise ValueError("build.yml: registry digest must not be reconstructed by hashing raw output")
+
+disk_workflow = Path(".forgejo/workflows/build-disk.yml").read_text(encoding="utf-8")
+for required in (
+    "IMAGE_REPOSITORY}@${IMAGE_DIGEST}",
+    "GPG_KEY_B64: ${{ secrets.GPG_KEY_B64 }}",
+    "GPG_KEY_PASSWORD: ${{ secrets.GPG_KEY_PASSWORD }}",
+    "bash scripts/sign-release-artifacts.sh release",
+    "SHA256SUMS.asc",
+    "actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd",
+):
+    if required not in disk_workflow:
+        raise ValueError(f"build-disk.yml: missing release contract: {required}")
+
+disk_document = yaml.safe_load(disk_workflow)
+privileged_job = yaml.safe_dump(disk_document["jobs"]["disk"])
+if "secrets." in privileged_job:
+    raise ValueError("build-disk.yml: privileged disk job must not receive secrets")
+release_job = yaml.safe_dump(disk_document["jobs"]["release"])
+for forbidden_secret in ("REGISTRY_TOKEN", "COSIGN_PRIVATE_KEY", "COSIGN_PASSWORD"):
+    if forbidden_secret in release_job:
+        raise ValueError(
+            f"build-disk.yml: release job must not receive {forbidden_secret}"
+        )
 PY
 
 if rg --line-number \

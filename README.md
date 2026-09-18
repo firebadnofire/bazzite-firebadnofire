@@ -31,7 +31,7 @@ installing it on a workstation.
 | Virtualization | QEMU/KVM, libvirt, virt-manager, virt-install, virt-viewer, swtpm, SPICE, libguestfs, and the Looking Glass B7 client |
 | CI | Forgejo Actions on the global `ubuntu-22.04` runner label |
 | Publication | Forgejo container registry on `pubcode.archuser.org` |
-| Signing | Key-based Cosign signature over the immutable published digest |
+| Signing | Key-based Cosign signature over the immutable OCI digest; detached OpenPGP signatures for downloadable disk artifacts |
 
 The upstream image is KDE-derived. KDE libraries and useful applications such
 as Dolphin remain installed because Bazzite does not publish a desktop-neutral
@@ -350,27 +350,21 @@ Do not put their values in files, workflow logs, commits, or issue text.
 
 | Secret | Purpose | Required for |
 | --- | --- | --- |
-| `REGISTRY_TOKEN` | Forgejo PAT with `write:package` scope, owned by an account permitted to publish packages for `universalblue` | Publication |
-| `COSIGN_PRIVATE_KEY` | Entire contents of the local `cosign.key` | Signing |
-| `COSIGN_PASSWORD` | Password used when the Cosign key was generated | Signing |
+| `REGISTRY_TOKEN` | Sensitive Forgejo PAT with `write:package` scope, owned by `firebadnofire` and permitted to publish packages for `universalblue` | Main-branch push, daily schedule, or main-ref manual image publication |
+| `COSIGN_PRIVATE_KEY` | Sensitive contents of the private `cosign.key` | OCI signing in production image runs |
+| `COSIGN_PASSWORD` | Sensitive password for `COSIGN_PRIVATE_KEY` | OCI signing in production image runs |
+| `GPG_KEY_B64` | Sensitive base64 encoding of the private OpenPGP key whose primary fingerprint is `7D6EF134D851C8DA0862D97494F31AF374E2EE3C` | Manual disk release signing |
+| `GPG_KEY_PASSWORD` | Sensitive passphrase for the OpenPGP private key | Manual disk release signing |
 
-Forgejo 13.0.3 [automatically creates a unique `FORGEJO_TOKEN`](https://forgejo.org/docs/v13.0/user/actions/basic-concepts/#automatic-token)
-for each workflow and removes it when the workflow finishes. It is available as the
-`FORGEJO_TOKEN` environment variable, `forgejo.token`, and
-`secrets.FORGEJO_TOKEN`; the similarly named `GITHUB_TOKEN` values are
-compatibility aliases. This repository uses Forgejo-native context names when
-it needs Forgejo context.
-
-The automatic token has repository write access, but Forgejo 13.0.3 does not
-map its synthetic `forgejo-actions` user to package permissions; its
-[package authorization implementation](https://codeberg.org/forgejo/forgejo/src/tag/v13.0.3/services/context/package.go#L95-L148)
-still marks that check as unfinished. It therefore
-cannot push `pubcode.archuser.org/universalblue/bazzite-firebadnofire`. Registry
-publication still requires the narrowly scoped `REGISTRY_TOKEN`; do not replace
-it with a broader account password or an all-scopes token. The workflow supplies
-the non-secret `forgejo.actor` value as Docker's required username field, while
-Forgejo derives the authenticated account and package authorization from the
-PAT. `REGISTRY_USERNAME` is no longer a repository secret or variable.
+The deployed Forgejo instance reports version 14.0.5. Forgejo
+[automatically creates a unique workflow token](https://forgejo.org/docs/v14.0/user/actions/basic-concepts/#automatic-token)
+and removes it when the workflow finishes. The disk release job uses that token
+only for the repository-local Forgejo release and tag API. Registry publication
+continues to use the manually verified PAT path: the fixed non-secret username
+is `firebadnofire`, and the token is `REGISTRY_TOKEN`. Do not replace it with
+the automatic token unless organization package publication is separately
+proved on the deployed Forgejo version. `REGISTRY_USERNAME`, `IMAGE_REGISTRY`,
+and `IMAGE_PATH` are configuration values, not secrets.
 
 Create the PAT from the publishing account's Forgejo user settings with only
 `write:package`, then add its value at **Settings → Actions → Secrets** as
@@ -382,6 +376,15 @@ error if the subsequent push lacks organization package permission.
 `cosign.pub` is public verification material and is intentionally committed.
 `cosign.key` is intentionally ignored. This repository never reads it during
 normal builds; only the Forgejo secret is exposed to the signing step.
+
+`GPG_KEY_B64` must be the base64 encoding of the private OpenPGP key material,
+not raw armored key text. Generate the encoded value in a trusted local
+environment without printing it to a shared terminal or log, then paste it
+directly into the Forgejo secret form. The disk workflow decodes it into a
+mode-`0600` file inside a mode-`0700` temporary `GNUPGHOME`, verifies the exact
+primary fingerprint, signs through loopback pinentry without putting the
+passphrase on a command line, verifies every signature, and removes the
+temporary GnuPG home through an exit trap.
 
 If a replacement key is ever required, back up the current key securely first,
 generate the replacement with Cosign, replace `cosign.pub`, and update both
@@ -396,27 +399,35 @@ commit a private key.
 - a pull request targeting `main` runs validation, builds the complete image,
   and inspects it, but never logs in, pushes, or signs;
 - a push to `main` performs those checks, publishes, signs, and verifies;
+- a schedule runs every day at **04:17 UTC** from the current default-branch
+  revision and follows the same production path as a push to `main`;
 - a manual dispatch builds the selected ref and publishes only when the ref is
   `main`.
 
-Markdown-only pushes to `main` are ignored. There is no scheduled publication.
-Before pushing to `main` or manually dispatching `main`, configure all three
-secrets listed above. For a non-publishing build verification, open or update a
-pull request targeting `main`; pull-request runs build and inspect the image but
-do not receive or use publication and signing secrets.
+Markdown-only pushes to `main` are ignored, but the independent daily schedule
+still runs. Start a manual build from **Actions → Validate, build, publish, and
+sign → Run workflow**, selecting `main` for a production run. Before a push,
+schedule, or main-ref manual production run, configure `REGISTRY_TOKEN`,
+`COSIGN_PRIVATE_KEY`, and `COSIGN_PASSWORD`. For a non-publishing build
+verification, open or update a pull request targeting `main`; pull-request runs
+build and inspect the image but do not receive or use publication secrets.
 
 A successful production run publishes these tags:
 
 - `stable` — mutable stream tag;
-- `stable-YYYYMMDD-<12-character-commit>` — dated traceability tag;
-- `sha-<12-character-commit>` — commit traceability tag.
+- `sha-<12-character-commit>` — commit traceability tag; a scheduled rebuild of
+  the same commit may update it because external RPM repositories are mutable;
+- `stable-YYYYMMDD-<12-character-commit>-<12-character-digest>` — immutable,
+  content-qualified build tag.
 
-The workflow verifies that every tag resolves to one `sha256:` manifest digest,
-then signs exactly `pubcode.archuser.org/universalblue/bazzite-firebadnofire@sha256:…`.
-If signing or immediate public-key verification fails, the workflow fails. A
-failed signing step may leave pushed but unsigned tags in the registry; do not
-trust a build until its complete workflow is green and independent verification
-succeeds.
+The workflow first pushes the commit tag, reads the registry-reported digest
+from Buildx's manifest descriptor, and signs exactly
+`pubcode.archuser.org/universalblue/bazzite-firebadnofire@sha256:…`. Only after
+Cosign verification succeeds does it push the immutable and `stable` tags. It
+then requires all three tags to resolve to the signed digest and verifies the
+signature again. Publishing, digest resolution, signing, verification, and tag
+consistency all fail closed. Do not trust a build until its complete workflow is
+green and independent verification succeeds.
 
 Verify a published digest locally:
 
@@ -440,20 +451,38 @@ do not embed credentials in the image reference or shell history.
 ### Disk-artifact workflow
 
 After a signed `stable` image exists, manually dispatch
-`.forgejo/workflows/build-disk.yml`. Its x86_64 matrix produces:
+**Actions → Build and release disk artifacts → Run workflow** on the revision
+to associate with the release. Configure `GPG_KEY_B64` and `GPG_KEY_PASSWORD`
+first. The workflow resolves `stable` once, validates its canonical registry
+digest, and passes that digest-pinned image reference to both privileged x86_64
+build jobs. The matrix produces:
 
-- a QCOW2 disk under bootc-image-builder's `output/qcow2/` layout;
-- an Anaconda installer ISO under `output/bootiso/install.iso`;
-- `SHA256SUMS` covering every uploaded file.
+- `bazzite-firebadnofire-<12-character-commit>-<12-character-digest>.qcow2`;
+- `bazzite-firebadnofire-<12-character-commit>-<12-character-digest>.iso`;
+- `SHA256SUMS` covering those two files;
+- one matching `.asc` detached OpenPGP signature for each of the three files.
 
-Each matrix job uploads an uncompressed Forgejo artifact retained for 30 days.
-The installer is configured to track this repository's `stable` image.
-The repository and owning organization are public, so packages published under
-that owner are anonymously readable. This workflow deliberately pulls `stable`
-without registry credentials; no PAT is exposed to the privileged disk-build
-job. If the package or organization is made private later, add job-scoped pull
-authentication using the minimum supported credential at that time rather than
-logging the DinD daemon in globally.
+The matrix outputs are retained as uncompressed Actions artifacts for seven
+days only as an internal job handoff. An unprivileged final job assembles the
+two files, creates and verifies `SHA256SUMS`, imports the pinned signing key into
+an isolated temporary GnuPG home, creates and verifies all three signatures,
+checks that the release directory contains exactly the expected six files, and
+publishes them with the official Forgejo release action pinned by commit.
+
+The permanent release/tag is
+`disk-<12-character-commit>-<12-character-digest>`. Re-running with the same
+source revision and OCI input reconciles that release instead of creating a
+duplicate. A different source revision or OCI digest creates a distinct
+historical disk release. Daily OCI schedules do not build disks or create
+releases, so the release list does not grow every day. Release notes record the
+full repository revision and exact OCI digest used for the build.
+
+The repository and owning organization are public, so the privileged jobs pull
+the digest-pinned image anonymously. No registry PAT, Cosign private key, or
+Cosign password is exposed to the privileged disk builders. GPG credentials are
+provided only to the final unprivileged signing step. If the package becomes
+private later, add the narrowest job-scoped pull credential rather than logging
+the DinD daemon in globally.
 
 The Anaconda ISO type is a compatibility path in bootc-image-builder and is
 being superseded upstream. A future migration should evaluate the unified
@@ -469,7 +498,63 @@ just build-iso
 
 These commands consume the published `stable` image by default and write to
 `output/`. They require privileged containers and can materially consume disk
-space. They do not modify a physical disk.
+space. They do not sign or publish artifacts and do not modify a physical disk.
+
+### OpenPGP verification for downloadable artifacts
+
+OpenPGP `.asc` signatures authenticate the downloadable QCOW2, ISO, and
+`SHA256SUMS` files. They do not authenticate the OCI registry image; use Cosign
+for that as documented above.
+
+The expected signing identity is `William Jones (Yubikey generated GPG key)`.
+The required full fingerprint is:
+
+```text
+7D6E F134 D851 C8DA 0862 D974 94F3 1AF3 74E2 EE3C
+```
+
+Import the public key from either supported keyserver:
+
+```bash
+gpg --keyserver hkps://keys.openpgp.org \
+  --recv-keys 7D6EF134D851C8DA0862D97494F31AF374E2EE3C
+gpg --keyserver hkps://keyserver.ubuntu.com \
+  --recv-keys 7D6EF134D851C8DA0862D97494F31AF374E2EE3C
+```
+
+Public-key copies are also available from
+[`https://github.com/firebadnofire.gpg`](https://github.com/firebadnofire.gpg),
+[`https://archuser.org/gpg.key`](https://archuser.org/gpg.key), and the direct
+import URL [`https://archuser.org/gpg/william.asc`](https://archuser.org/gpg/william.asc).
+On PowerShell, direct import is:
+
+```powershell
+Invoke-WebRequest `
+    -Uri 'https://archuser.org/gpg/william.asc' `
+    -OutFile 'william.asc'
+
+gpg --import .\william.asc
+```
+
+On Windows, Kleopatra is included with
+[Gpg4win](https://www.gpg4win.org/), which can be installed with:
+
+```powershell
+winget install GnuPG.Gpg4win
+```
+
+Always inspect the full fingerprint, then verify each artifact against the
+matching signature:
+
+```bash
+gpg --fingerprint 7D6EF134D851C8DA0862D97494F31AF374E2EE3C
+gpg --verify ./<artifact>.asc ./<artifact>
+```
+
+A `Good signature` result is not sufficient by itself. Confirm that the key has
+the exact full fingerprint shown above. After that, validate the checksum list
+from the directory containing the downloads with `sha256sum --check
+--strict SHA256SUMS` (or an equivalent trusted checksum tool).
 
 ## VM smoke testing
 
