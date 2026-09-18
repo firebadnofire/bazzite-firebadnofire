@@ -24,11 +24,19 @@ for file in "${required_files[@]}"; do
     }
 done
 
+# Unlike the other required files, include.txt may intentionally be empty.
+[[ -f include.txt ]] || {
+    echo "error: required file is missing: include.txt" >&2
+    exit 1
+}
+
 bash -n \
     scripts/disk-handoff.sh \
     scripts/test-disk-handoff.sh \
     build_files/fix-terra-mesa-keys.sh \
+    build_files/include-packages.sh \
     build_files/build.sh \
+    scripts/test-include-packages.sh \
     scripts/sign-release-artifacts.sh \
     scripts/validate-static.sh \
     system_files/usr/libexec/bazzite-firebadnofire-screenshot \
@@ -44,13 +52,16 @@ shellcheck \
     scripts/disk-handoff.sh \
     scripts/test-disk-handoff.sh \
     build_files/fix-terra-mesa-keys.sh \
+    build_files/include-packages.sh \
     build_files/build.sh \
+    scripts/test-include-packages.sh \
     scripts/sign-release-artifacts.sh \
     scripts/validate-static.sh \
     system_files/usr/libexec/bazzite-firebadnofire-screenshot \
     system_files/usr/libexec/bazzite-firebadnofire-start-hyprland
 
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-repo-keys.py
+bash scripts/test-include-packages.sh
 
 python3 - <<'PY'
 from pathlib import Path

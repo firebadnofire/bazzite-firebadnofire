@@ -45,6 +45,7 @@ desktop.
 - `Containerfile` pins the reviewed Bazzite base and runs image construction.
 - `build_files/build.sh` installs packages, copies the system overlay, enables
   services, and asserts the built image contract.
+- `include.txt` lists additional RPM packages to bake into every image build.
 - `system_files/` contains the Hyprland session launcher and immutable defaults.
 - `bazzite-firebadnofire.env` is the single image/registry/build identity file.
 - `.forgejo/workflows/` contains image and disk-artifact workflows.
@@ -97,6 +98,20 @@ Audio, microphone, media, and brightness keys are also configured. The idle
 policy requests a lock after five minutes and powers displays off after ten.
 
 ## Package sources and security boundary
+
+### Additional base-image packages
+
+Add one RPM package name per line to the repository-root `include.txt` to bake
+it into future `bazzite-firebadnofire` OCI images. Blank lines and lines whose
+first non-whitespace character is `#` are ignored; surrounding whitespace is
+also ignored. An empty file is valid. Package names are resolved and installed
+with `dnf5` during the normal image build, and the finished image is checked
+with `rpm -q` against the same manifest. An invalid, unavailable, or failed
+package installation fails the build rather than being skipped.
+
+`include.txt` is copied into the image at
+`/usr/share/bazzite-firebadnofire/include.txt` so post-build inspection can
+verify the installed package set without duplicating the list elsewhere.
 
 Most additions come from Fedora, RPM Fusion, Terra, or repositories already
 configured by Bazzite. Fedora 44 does not currently publish Hyprland itself, so

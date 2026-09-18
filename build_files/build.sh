@@ -12,7 +12,7 @@ desktop_packages=(
 
 admin_packages=(
     bat dmidecode fd-find gh git-lfs hwinfo iperf3 iotop lsscsi minicom
-    mosh ncdu nmap nmap-ncat pv ripgrep screen strace sysstat tree wget
+    mosh ncdu nmap-ncat pv ripgrep screen strace sysstat tree wget
     wireshark-cli
 )
 
@@ -52,6 +52,18 @@ dnf5 -y install \
     "${development_packages[@]}" \
     "${virtualization_packages[@]}" \
     "${looking_glass_build_packages[@]}"
+
+# Keep repository-root include.txt as the single source of truth for optional
+# base-image RPMs. This is a normal image-build transaction: resolver or install
+# failures are fatal, and an empty manifest is a valid no-op.
+install -D -m 0644 \
+    /ctx/include.txt \
+    /usr/share/bazzite-firebadnofire/include.txt
+install -D -m 0755 \
+    /ctx/include-packages.sh \
+    /usr/libexec/bazzite-firebadnofire-include-packages
+/usr/libexec/bazzite-firebadnofire-include-packages install \
+    /usr/share/bazzite-firebadnofire/include.txt
 
 # Fedora 44 has no maintained Looking Glass client package. Build the current
 # stable upstream source archive (which includes its submodules) after checking
@@ -114,6 +126,8 @@ rpm -q \
     qemu-kvm \
     virt-manager \
     xdg-desktop-portal-hyprland
+/usr/libexec/bazzite-firebadnofire-include-packages verify \
+    /usr/share/bazzite-firebadnofire/include.txt
 test -x /usr/libexec/bazzite-firebadnofire-start-hyprland
 test -x /usr/libexec/bazzite-firebadnofire-screenshot
 test -x /usr/bin/looking-glass-client

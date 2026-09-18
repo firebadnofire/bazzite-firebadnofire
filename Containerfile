@@ -1,6 +1,7 @@
 # Allow build scripts to be referenced without being copied into the final image
 FROM scratch AS ctx
 COPY build_files /
+COPY include.txt /include.txt
 COPY system_files /system_files
 
 # Bazzite's NVIDIA-open variant supports Turing and newer GPUs, including every

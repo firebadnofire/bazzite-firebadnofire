@@ -55,6 +55,8 @@ inspect target=("localhost/" + image_name) tag=default_tag:
       rpm -q hyprland hypridle hyprlock hyprpolkitagent \
         xdg-desktop-portal-hyprland libvirt-daemon-kvm qemu-kvm \
         virt-manager plasma-login-manager bootc
+      /usr/libexec/bazzite-firebadnofire-include-packages verify \
+        /usr/share/bazzite-firebadnofire/include.txt
       Hyprland --verify-config --i-am-really-stupid \
         --config /usr/share/bazzite-firebadnofire/hyprland.lua
       test -x /usr/bin/looking-glass-client
