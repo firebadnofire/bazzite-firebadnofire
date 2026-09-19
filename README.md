@@ -566,6 +566,32 @@ read-only and can create temporary images or metadata only in their separate,
 run-scoped writable stores. They therefore do not concurrently mutate one
 containers/storage database.
 
+Podman can inspect the canonical registry digest through the additional image
+store, but bootc-image-builder/osbuild's containers-storage resolver needs the
+image name and all layer metadata in the primary writable graphroot. A writable
+tag or a copy performed while the additional store remains visible can resolve
+the name while still leaving osbuild unable to find the read-only layers.
+Under the existing shared cache lock, each job therefore resolves the
+digest-pinned cached image to its full Podman image ID and uses
+`cp -a --reflink=always` to copy only the cache's immutable `overlay`,
+`overlay-images`, and `overlay-layers` data into its empty disposable store.
+It deliberately does not copy Podman's graphroot-specific `libpod` database.
+The Btrfs-backed runner makes this a copy-on-write local promotion rather than
+a second registry pull or a second fully allocated image. Reflink support and
+same-filesystem Docker volumes are therefore disk-builder runner requirements;
+the job fails instead of silently making a space-heavy full copy.
+
+After promotion, the builder switches to
+`disk_config/ci-writable-storage.conf`, which removes `additionalimagestores`
+from the builder's resolution path, and creates
+`localhost/bazzite-firebadnofire-build-source:cached` in the writable store.
+The job requires that the local name appears in `readonly=false` output and
+that its full image ID exactly equals the cached digest-selected image ID. It
+then gives only this verified local name to bootc-image-builder. Any incomplete
+copy, missing name, ambiguous writable entry, or ID mismatch fails before
+manifest generation; the original registry digest remains the release's
+canonical source identity.
+
 The companion `bazzite-firebadnofire-bib-image-cache-lock-v1` volume contains
 the cross-container lock file. Cache refresh and maintenance take an exclusive
 `flock`; each builder holds a shared lock for its entire run. This also protects

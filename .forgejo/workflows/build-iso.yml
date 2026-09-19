@@ -58,7 +58,7 @@ jobs:
           docker run --rm "${DOCKER_SMOKE_IMAGE}"
           docker run --rm --privileged --entrypoint /usr/bin/bash \
             "${BIB_IMAGE}" -c \
-            'command -v podman; command -v flock; command -v bootc-image-builder'
+            'command -v podman; command -v flock; command -v bootc-image-builder; cp --help | grep -F -- "--reflink"'
 
       - name: Resolve the stable image digest
         id: image
@@ -250,7 +250,7 @@ jobs:
           docker run --rm --privileged "${BIB_IMAGE}" --version
           docker run --rm --privileged --entrypoint /usr/bin/bash \
             "${BIB_IMAGE}" -c \
-            'command -v podman; command -v flock; command -v bootc-image-builder'
+            'command -v podman; command -v flock; command -v bootc-image-builder; cp --help | grep -F -- "--reflink"'
 
       - name: Verify the shared handoff daemon before building
         shell: bash
@@ -268,6 +268,7 @@ jobs:
           set -Eeuo pipefail
           [[ "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
           source_image="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
+          build_source_image="localhost/bazzite-firebadnofire-build-source:cached"
           output_volume="bib-output-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-anaconda-iso"
           storage_volume="bib-storage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-anaconda-iso"
           container="bib-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-anaconda-iso"
@@ -295,6 +296,7 @@ jobs:
               --network host \
               --security-opt label=type:unconfined_t \
               --env "SOURCE_IMAGE=${source_image}" \
+              --env "BUILD_SOURCE_IMAGE=${build_source_image}" \
               --volume "${storage_volume}:/var/lib/containers/storage" \
               --volume "${BIB_CACHE_VOLUME}:/var/cache/bib-image-store:ro" \
               --volume "${BIB_CACHE_LOCK_VOLUME}:/var/cache/bib-cache-lock" \
@@ -308,6 +310,21 @@ jobs:
                 podman image exists "${SOURCE_IMAGE}"
                 podman image inspect --format \
                   "id={{.Id}} digest={{.Digest}}" "${SOURCE_IMAGE}"
+                if podman image exists "${BUILD_SOURCE_IMAGE}"; then
+                  cached_image_id="$(podman image inspect --format "{{.Id}}" \
+                    "${SOURCE_IMAGE}")"
+                  writable_image_id="$(podman image inspect --format "{{.Id}}" \
+                    "${BUILD_SOURCE_IMAGE}")"
+                  echo "Writable build source: ${BUILD_SOURCE_IMAGE}"
+                  echo "Writable build source image ID: ${writable_image_id}"
+                  if [[ "${cached_image_id}" == "${writable_image_id}" ]]; then
+                    echo "Cached and writable-store image IDs match"
+                  else
+                    echo "warning: cached and writable-store image IDs differ" >&2
+                  fi
+                else
+                  echo "Writable build source is not present: ${BUILD_SOURCE_IMAGE}"
+                fi
                 find /var/lib/containers/storage \
                   -mindepth 1 -maxdepth 2 -type d -print | sort | sed -n "1,80p"
                 df -hT /var/lib/containers/storage
@@ -342,6 +359,7 @@ jobs:
             --privileged \
             --network host \
             --security-opt label=type:unconfined_t \
+            --env "BUILD_SOURCE_IMAGE=${build_source_image}" \
             --env "SOURCE_IMAGE=${source_image}" \
             --volume "${storage_volume}:/var/lib/containers/storage" \
             --volume "${BIB_CACHE_VOLUME}:/var/cache/bib-image-store:ro" \
@@ -377,15 +395,63 @@ jobs:
               echo "Waiting for shared bootc source-cache lock"
               flock --shared 9
               podman image exists "${SOURCE_IMAGE}"
-              echo "Building installer ISO from cached exact source ${SOURCE_IMAGE}"
+              cached_image_id="$(podman image inspect --format "{{.Id}}" \
+                "${SOURCE_IMAGE}")"
+              [[ -n "${cached_image_id}" ]]
+              echo "Canonical registry source: ${SOURCE_IMAGE}"
+              echo "Cached source image ID: ${cached_image_id}"
+
+              # Reflink only immutable containers/storage image data. Do not
+              # copy the graphroot-specific libpod database into the job store.
+              [[ -z "$(find /var/lib/containers/storage \
+                -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
+                echo "error: writable container storage is not empty before source promotion" >&2
+                exit 1
+              }
+              echo "Promoting cached image data into the writable store with reflinks"
+              for image_store_path in overlay overlay-images overlay-layers; do
+                [[ -d "/var/cache/bib-image-store/${image_store_path}" ]] || {
+                  echo "error: cached image store is missing ${image_store_path}" >&2
+                  exit 1
+                }
+                cp -a --reflink=always \
+                  "/var/cache/bib-image-store/${image_store_path}" \
+                  /var/lib/containers/storage/
+              done
+
+              # Make osbuild resolve layers only from the complete writable copy.
+              install -m 0644 /etc/containers/writable-storage.conf \
+                /etc/containers/storage.conf
+              podman image exists "${SOURCE_IMAGE}"
+              echo "Writable store resolves canonical source: ${SOURCE_IMAGE}"
+              podman tag "${SOURCE_IMAGE}" "${BUILD_SOURCE_IMAGE}"
+              podman image exists "${BUILD_SOURCE_IMAGE}"
+              writable_image_id="$(podman image inspect --format "{{.Id}}" \
+                "${BUILD_SOURCE_IMAGE}")"
+              mapfile -t writable_image_ids < <(
+                podman images --filter readonly=false \
+                  --filter "reference=${BUILD_SOURCE_IMAGE}" --format "{{.Id}}"
+              )
+              [[ "${#writable_image_ids[@]}" -eq 1 ]]
+              [[ "${writable_image_ids[0]}" == "${writable_image_id}" ]]
+              echo "Writable build source: ${BUILD_SOURCE_IMAGE}"
+              echo "Writable build source image ID: ${writable_image_id}"
+              [[ "${cached_image_id}" == "${writable_image_id}" ]] || {
+                echo "error: writable build source does not match the digest-pinned cached image" >&2
+                exit 1
+              }
+              echo "Confirmed cached and writable-store image IDs match"
+              echo "Building installer ISO from verified writable source ${BUILD_SOURCE_IMAGE}"
               bootc-image-builder \
                 --type anaconda-iso \
                 --rootfs btrfs \
                 --use-librepo=true \
-                "${SOURCE_IMAGE}"
+                "${BUILD_SOURCE_IMAGE}"
             ' >/dev/null
           docker cp disk_config/ci-storage.conf \
             "${container}:/etc/containers/storage.conf"
+          docker cp disk_config/ci-writable-storage.conf \
+            "${container}:/etc/containers/writable-storage.conf"
           docker cp disk_config/iso.toml "${container}:/config.toml"
           docker start --attach "${container}"
 

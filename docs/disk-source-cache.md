@@ -30,6 +30,28 @@ can read identical cached layers while their temporary images, metadata, and
 locks remain isolated. This avoids sharing a writable container-storage
 database or separate containers' `/dev/shm` locking state.
 
+bootc-image-builder/osbuild does not reliably resolve the external registry
+digest name directly from an additional image store even when Podman can
+inspect it. A writable tag or a containers/storage copy made while that
+additional store remains visible is also insufficient: osbuild can resolve the
+image ID and still fail to find layers that remain owned by the read-only
+store. While holding the shared cache lock, the builder resolves the canonical
+digest reference to a full Podman image ID, requires an empty per-job store,
+and reflink-copies the cache's immutable `overlay`, `overlay-images`, and
+`overlay-layers` directories into it. Podman's graphroot-specific `libpod`
+database is deliberately excluded.
+
+The builder then switches from `ci-storage.conf` to the primary-store-only
+`ci-writable-storage.conf`, verifies that the digest reference resolves from
+that store, and creates `localhost/bazzite-firebadnofire-build-source:cached`.
+The local name must be a writable-store entry with the identical image ID.
+The operation is local and cannot contact the registry. The runner's Btrfs
+filesystem provides same-filesystem reflinks between the cache and per-job
+Docker volumes; `--reflink=always` fails closed instead of unexpectedly making
+a fully allocated copy. bootc-image-builder receives the verified local name,
+while artifact filenames and release notes continue to use the originally
+resolved registry digest.
+
 The volumes are inner-Docker volumes. Their DinD paths are:
 
 ```text
@@ -167,9 +189,15 @@ blob copies. In the second run, verify all of the following in the Actions log:
 3. `Persistent cache after pull` retains the same image ID and digest.
 4. Both matrix jobs print `Cache reuse:` for that exact digest and list it
    under `Read-only images visible through additionalimagestores`.
-5. The build line still says
-   `Building from cached exact source ...@sha256:...`; it must never name
-   `:stable`.
+5. Each job prints `Canonical registry source: ...@sha256:...`, the cached image
+   ID, `Promoting cached image data into the writable store with reflinks`,
+   `Writable store resolves canonical source: ...@sha256:...`,
+   `Writable build source: localhost/bazzite-firebadnofire-build-source:cached`,
+   the writable image ID, and `Confirmed cached and writable-store image IDs
+   match`.
+6. The builder line names only the verified `localhost/...:cached` reference;
+   neither selection nor cache population ever uses `:stable` after digest
+   resolution.
 
 For independent runner-side evidence, run the inspection commands before and
 after the second dispatch and record the exact image inventory and `du -sh`

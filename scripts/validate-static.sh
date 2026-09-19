@@ -11,6 +11,7 @@ required_files=(
     bazzite-firebadnofire.env
     cosign.pub
     disk_config/ci-storage.conf
+    disk_config/ci-writable-storage.conf
     disk_config/disk.toml
     disk_config/iso.toml
     scripts/sign-release-artifacts.sh
@@ -141,6 +142,13 @@ for required in (
     "flock --exclusive 9",
     "flock --shared 9",
     '"${BIB_CACHE_VOLUME}:/var/cache/bib-image-store:ro"',
+    'build_source_image="localhost/bazzite-firebadnofire-build-source:cached"',
+    'cp -a --reflink=always',
+    'disk_config/ci-writable-storage.conf',
+    'podman tag "${SOURCE_IMAGE}" "${BUILD_SOURCE_IMAGE}"',
+    'podman images --filter readonly=false',
+    '"${cached_image_id}" == "${writable_image_id}"',
+    '"${BUILD_SOURCE_IMAGE}"',
     "actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd",
 ):
     if required not in disk_workflow:
@@ -158,6 +166,15 @@ for required in (
 ):
     if required not in storage_config:
         raise ValueError(f"ci-storage.conf: missing cache contract: {required}")
+writable_storage_config = Path(
+    "disk_config/ci-writable-storage.conf"
+).read_text(encoding="utf-8")
+if 'graphroot = "/var/lib/containers/storage"' not in writable_storage_config:
+    raise ValueError("ci-writable-storage.conf: missing writable graphroot")
+if "additionalimagestores" in writable_storage_config:
+    raise ValueError(
+        "ci-writable-storage.conf: builder must resolve only from its primary store"
+    )
 release = disk_document["jobs"]["release"]
 if set(release["needs"]) != {"prepare", "disk"}:
     raise ValueError("build-disk.yml: release must depend on prepare and the whole disk matrix")
@@ -191,6 +208,13 @@ for required in (
     "disk_config/iso.toml",
     "output/bootiso/install.iso",
     "HANDOFF_FORMATS: iso",
+    'build_source_image="localhost/bazzite-firebadnofire-build-source:cached"',
+    'cp -a --reflink=always',
+    'disk_config/ci-writable-storage.conf',
+    'podman tag "${SOURCE_IMAGE}" "${BUILD_SOURCE_IMAGE}"',
+    'podman images --filter readonly=false',
+    '"${cached_image_id}" == "${writable_image_id}"',
+    '"${BUILD_SOURCE_IMAGE}"',
     "bash scripts/sign-release-artifacts.sh release sig",
     "GPG_KEY_B64: ${{ secrets.GPG_KEY_B64 }}",
     "GPG_KEY_PASSWORD: ${{ secrets.GPG_KEY_PASSWORD }}",
@@ -215,6 +239,29 @@ if set(iso_document["jobs"]["release"]["needs"]) != {"prepare", "iso"}:
     raise ValueError("build-iso.yml: release must depend on prepare and the ISO build")
 if "secrets." in yaml.safe_dump(iso_document["jobs"]["iso"]):
     raise ValueError("build-iso.yml: privileged ISO job must not receive secrets")
+for workflow_name, workflow_text in (
+    ("build-disk.yml", disk_workflow),
+    ("build-iso.yml", iso_workflow),
+):
+    if workflow_text.count('cp -a --reflink=always') != 1:
+        raise ValueError(f"{workflow_name}: source promotion must occur exactly once")
+    if workflow_text.count(
+        'podman tag "${SOURCE_IMAGE}" "${BUILD_SOURCE_IMAGE}"'
+    ) != 1:
+        raise ValueError(f"{workflow_name}: deterministic local tag must occur exactly once")
+    if workflow_text.count(
+        'echo "Confirmed cached and writable-store image IDs match"'
+    ) != 1:
+        raise ValueError(f"{workflow_name}: exact image-ID match must be explicit")
+    if 'bootc-image-builder \\\n' not in workflow_text or \
+            '"${BUILD_SOURCE_IMAGE}"\n' not in workflow_text:
+        raise ValueError(
+            f"{workflow_name}: bootc-image-builder must use the writable local reference"
+        )
+    if '--use-librepo=true \\\n                "${SOURCE_IMAGE}"' in workflow_text:
+        raise ValueError(
+            f"{workflow_name}: bootc-image-builder must not receive the registry reference"
+        )
 iso_steps = iso_document["jobs"]["release"]["steps"]
 iso_sign = next(
     i for i, step in enumerate(iso_steps)
