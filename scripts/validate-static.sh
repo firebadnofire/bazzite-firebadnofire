@@ -7,8 +7,10 @@ readonly root
 cd "${root}"
 
 required_files=(
+    .forgejo/workflows/build-iso.yml
     bazzite-firebadnofire.env
     cosign.pub
+    disk_config/ci-storage.conf
     disk_config/disk.toml
     disk_config/iso.toml
     scripts/sign-release-artifacts.sh
@@ -135,6 +137,10 @@ for required in (
     "bash scripts/disk-handoff.sh collect",
     "bash scripts/disk-handoff.sh cleanup",
     "both matrix builds must succeed before signing or publishing",
+    "BIB_CACHE_VOLUME: bazzite-firebadnofire-bib-image-cache-v1",
+    "flock --exclusive 9",
+    "flock --shared 9",
+    '"${BIB_CACHE_VOLUME}:/var/cache/bib-image-store:ro"',
     "actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd",
 ):
     if required not in disk_workflow:
@@ -143,6 +149,15 @@ for required in (
 disk_document = yaml.safe_load(disk_workflow)
 if "upload-artifact@" in disk_workflow or "download-artifact@" in disk_workflow:
     raise ValueError("build-disk.yml: disk payloads must not round-trip through Actions artifacts")
+if 'cleanup_volume in "${output_volume}" "${storage_volume}" "${BIB_CACHE_VOLUME}"' in disk_workflow:
+    raise ValueError("build-disk.yml: ordinary cleanup must not remove the persistent source cache")
+storage_config = Path("disk_config/ci-storage.conf").read_text(encoding="utf-8")
+for required in (
+    'graphroot = "/var/lib/containers/storage"',
+    'additionalimagestores = ["/var/cache/bib-image-store"]',
+):
+    if required not in storage_config:
+        raise ValueError(f"ci-storage.conf: missing cache contract: {required}")
 release = disk_document["jobs"]["release"]
 if set(release["needs"]) != {"prepare", "disk"}:
     raise ValueError("build-disk.yml: release must depend on prepare and the whole disk matrix")
@@ -167,6 +182,68 @@ for forbidden_secret in ("REGISTRY_TOKEN", "COSIGN_PRIVATE_KEY", "COSIGN_PASSWOR
         raise ValueError(
             f"build-disk.yml: release job must not receive {forbidden_secret}"
         )
+
+iso_workflow = Path(".forgejo/workflows/build-iso.yml").read_text(encoding="utf-8")
+for required in (
+    "workflow_dispatch:",
+    "IMAGE_REPOSITORY}@${IMAGE_DIGEST}",
+    "--type anaconda-iso",
+    "disk_config/iso.toml",
+    "output/bootiso/install.iso",
+    "HANDOFF_FORMATS: iso",
+    "bash scripts/sign-release-artifacts.sh release sig",
+    "GPG_KEY_B64: ${{ secrets.GPG_KEY_B64 }}",
+    "GPG_KEY_PASSWORD: ${{ secrets.GPG_KEY_PASSWORD }}",
+    '"${ISO_FILE}.sig"',
+    "SHA256SUMS.sig",
+    "unsigned release asset",
+    "tag: iso-${{ steps.metadata.outputs.release_id }}",
+    "actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd",
+):
+    if required not in iso_workflow:
+        raise ValueError(f"build-iso.yml: missing ISO release contract: {required}")
+for forbidden in ("qcow2", ".asc", "matrix:"):
+    if forbidden in iso_workflow:
+        raise ValueError(f"build-iso.yml: forbidden ISO-only workflow content: {forbidden}")
+
+iso_document = yaml.safe_load(iso_workflow)
+if set(iso_document["jobs"]) != {"prepare", "iso", "release"}:
+    raise ValueError("build-iso.yml: workflow must contain only prepare, iso, and release jobs")
+if iso_document["jobs"]["iso"].get("strategy") is not None:
+    raise ValueError("build-iso.yml: ISO job must not use a matrix")
+if set(iso_document["jobs"]["release"]["needs"]) != {"prepare", "iso"}:
+    raise ValueError("build-iso.yml: release must depend on prepare and the ISO build")
+if "secrets." in yaml.safe_dump(iso_document["jobs"]["iso"]):
+    raise ValueError("build-iso.yml: privileged ISO job must not receive secrets")
+iso_steps = iso_document["jobs"]["release"]["steps"]
+iso_sign = next(
+    i for i, step in enumerate(iso_steps)
+    if "sign-release-artifacts.sh release sig" in step.get("run", "")
+)
+iso_complete = next(
+    i for i, step in enumerate(iso_steps)
+    if "unsigned release asset" in step.get("run", "")
+)
+iso_publish = next(
+    i for i, step in enumerate(iso_steps)
+    if "forgejo-release@" in step.get("uses", "")
+)
+if not iso_sign < iso_complete < iso_publish:
+    raise ValueError("build-iso.yml: signing and exact completeness must precede publication")
+if iso_steps[-1].get("if") != "${{ always() }}" or \
+        "disk-handoff.sh cleanup" not in iso_steps[-1].get("run", ""):
+    raise ValueError("build-iso.yml: final ISO handoff cleanup must run on failures too")
+
+signing_helper = Path("scripts/sign-release-artifacts.sh").read_text(encoding="utf-8")
+for required in (
+    'readonly signature_extension="${2:-asc}"',
+    "asc) readonly -a signature_format=(--armor)",
+    "sig) readonly -a signature_format=()",
+    'signature="${artifact}.${signature_extension}"',
+    'gpg --batch --no-tty --verify "${signature}" "${artifact}"',
+):
+    if required not in signing_helper:
+        raise ValueError(f"sign-release-artifacts.sh: missing signature-format contract: {required}")
 PY
 
 if rg --line-number \

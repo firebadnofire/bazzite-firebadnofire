@@ -253,7 +253,7 @@ describe the underlying trust model.
 
 The runner host Compose file pins
 `docker:29.5.2-dind@sha256:6b9cd914eb9c6b342c040a49a27a5eb3804453bae6ecc90f7ff96133595a95e8`
-and includes these essential settings (the cache services are omitted here):
+and includes these essential settings:
 
 ```yaml
 services:
@@ -506,6 +506,33 @@ upload, whose proxy limits still need to accommodate the complete file.
 See [artifact finalization troubleshooting and handoff tests](docs/disk-artifact-handoff.md)
 for server logs, cleanup guidance, and verification commands.
 
+For a release containing only the Anaconda installer ISO, manually dispatch
+**Actions → Build and release installer ISO → Run workflow**. The separate
+`.forgejo/workflows/build-iso.yml` workflow has no matrix and never builds a
+QCOW2. It preserves the same exact-digest resolution, x86_64/DinD checks,
+rootful Podman cache, `disk_config/iso.toml`, Btrfs root, failure diagnostics,
+daemon-local checksum handoff, and pinned Forgejo release action.
+
+The ISO-only release tag is
+`iso-<12-character-commit>-<12-character-source-digest>`, so it cannot collide
+with the combined workflow's `disk-...` namespace. Its release directory is
+required to contain exactly four nonempty files:
+
+- `bazzite-firebadnofire-<release-id>.iso`;
+- `bazzite-firebadnofire-<release-id>.iso.sig`;
+- `SHA256SUMS`, covering only the ISO payload;
+- `SHA256SUMS.sig`.
+
+The `.sig` files are binary detached OpenPGP signatures. The signing helper
+imports the base64-decoded private key into a temporary isolated GnuPG home,
+requires the documented full primary fingerprint, signs both payload files,
+and cryptographically verifies both signatures before continuing. A second
+gate checks the exact four-file set and verifies that every nonsignature asset
+has one corresponding nonempty `.sig` file and every `.sig` has a payload. The
+release action cannot run if either gate fails. Release notes are passed
+separately and are not downloadable assets. The existing combined disk
+workflow continues to request ASCII-armored `.asc` signatures.
+
 The permanent release/tag is
 `disk-<12-character-commit>-<12-character-digest>`. Re-running with the same
 source revision and OCI input reconciles that release instead of creating a
@@ -523,16 +550,40 @@ the DinD daemon in globally.
 
 bootc-image-builder consumes its source through rootful Podman
 containers-storage even though this Forgejo job is driven by the Docker CLI.
-Each matrix job therefore creates an isolated Docker named volume for
-`/var/lib/containers/storage`, runs the Podman binary already included in the
-pinned bootc-image-builder image to pull the exact digest-pinned source into
-that volume, validates the resulting overlay store, and mounts the populated
-volume into the builder container. The store lives on the same external Docker
-daemon as the builder and is removed after the job. Neither Podman nor a host
-`/var/lib/containers/storage` directory is required in the Actions job or
-Forgejo runner container. A failed build prints Docker-volume, Podman-store,
-stored-image, storage-directory, and filesystem-capacity diagnostics before
-cleanup.
+Before the matrix starts, the prepare job pulls the exact digest-pinned source
+into the persistent, labeled Docker volume
+`bazzite-firebadnofire-bib-image-cache-v1`. It never keys the cache from the
+mutable `stable` tag: `stable` is resolved and verified first, and the cache is
+then populated from `pubcode.archuser.org/universalblue/bazzite-firebadnofire@sha256:...`.
+A missing or empty volume is a normal cold cache and Podman downloads the image;
+later digests reuse any unchanged content-addressed layers already present.
+
+Each matrix job still creates its own writable Docker volume for
+`/var/lib/containers/storage`. `disk_config/ci-storage.conf` exposes the
+persistent store to that job through containers/storage's read-only
+`additionalimagestores` mechanism. The QCOW2 and ISO builders mount the cache
+read-only and can create temporary images or metadata only in their separate,
+run-scoped writable stores. They therefore do not concurrently mutate one
+containers/storage database.
+
+The companion `bazzite-firebadnofire-bib-image-cache-lock-v1` volume contains
+the cross-container lock file. Cache refresh and maintenance take an exclusive
+`flock`; each builder holds a shared lock for its entire run. This also protects
+against disk workflows for different refs, which are not covered by the same
+Forgejo concurrency group. The cache volumes live in the DinD daemon under
+`/var/lib/docker/volumes/`, backed by Compose's persistent
+`docker-data:/var/lib/docker` volume. They survive matrix jobs, workflow runs,
+and runner/DinD container restarts, but remain disposable Docker data. The
+host-side `./build-cache` bind mount is deliberately unused, so it does not need
+to be added to the DinD service.
+
+Ordinary workflow cleanup removes only per-job containers, output volumes,
+writable Podman stores, and run-scoped handoff volumes. It never removes the
+persistent source cache. A failed build prints both writable-store and
+read-only-cache inventory, exact image identity, directories, cache size, and
+filesystem capacity before cleanup. See
+[bootc source-cache operations](docs/disk-source-cache.md) for inspection,
+exclusive-lock pruning, rollback, and warm-cache verification commands.
 
 ### Terra Mesa repository keys
 

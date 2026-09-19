@@ -21,6 +21,14 @@ trap 'echo "error: disk handoff failed at line ${LINENO} (${1:-unknown}); inspec
 repository_hash="$(printf '%s' "${GITHUB_REPOSITORY}" | sha256sum)"
 scope="${repository_hash:0:16}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 digest_hex="${IMAGE_DIGEST#sha256:}"
+read -r -a handoff_formats <<< "${HANDOFF_FORMATS:-qcow2 iso}"
+[[ "${#handoff_formats[@]}" -gt 0 ]]
+for handoff_format in "${handoff_formats[@]}"; do
+    [[ "${handoff_format}" == qcow2 || "${handoff_format}" == iso ]] || {
+        echo "error: unsupported handoff format: ${handoff_format}" >&2
+        exit 2
+    }
+done
 
 select_volume() {
     local format="$1"
@@ -70,7 +78,7 @@ case "${1:-}" in
         ;;
     collect)
         mkdir -p release
-        for format in qcow2 iso; do
+        for format in "${handoff_formats[@]}"; do
             select_volume "${format}"
             verify_volume
             temporary_dir="$(mktemp -d)"
@@ -95,7 +103,7 @@ case "${1:-}" in
         done
         ;;
     cleanup)
-        for format in qcow2 iso; do
+        for format in "${handoff_formats[@]}"; do
             select_volume "${format}"
             if docker volume inspect "${volume}" >/dev/null 2>&1; then
                 verify_volume

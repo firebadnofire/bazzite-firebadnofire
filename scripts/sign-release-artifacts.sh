@@ -3,7 +3,17 @@
 set -Eeuo pipefail
 
 readonly expected_fingerprint="7D6EF134D851C8DA0862D97494F31AF374E2EE3C"
-readonly release_dir="${1:?usage: sign-release-artifacts.sh RELEASE_DIR}"
+readonly release_dir="${1:?usage: sign-release-artifacts.sh RELEASE_DIR [asc|sig]}"
+readonly signature_extension="${2:-asc}"
+
+case "${signature_extension}" in
+  asc) readonly -a signature_format=(--armor) ;;
+  sig) readonly -a signature_format=() ;;
+  *)
+    echo "error: signature extension must be asc or sig" >&2
+    exit 2
+    ;;
+esac
 
 : "${GPG_KEY_B64:?configure the GPG_KEY_B64 repository secret}"
 : "${GPG_KEY_PASSWORD:?configure the GPG_KEY_PASSWORD repository secret}"
@@ -49,7 +59,8 @@ if [[ "${#primary_fingerprints[@]}" -ne 1 ]] || \
 fi
 
 mapfile -d '' -t artifacts < <(
-  find "${release_dir}" -maxdepth 1 -type f ! -name '*.asc' -print0 | sort -z
+  find "${release_dir}" -maxdepth 1 -type f \
+    ! -name '*.asc' ! -name '*.sig' -print0 | sort -z
 )
 [[ "${#artifacts[@]}" -gt 0 ]] || {
   echo "error: no release artifacts found in ${release_dir}" >&2
@@ -57,7 +68,7 @@ mapfile -d '' -t artifacts < <(
 }
 
 for artifact in "${artifacts[@]}"; do
-  signature="${artifact}.asc"
+  signature="${artifact}.${signature_extension}"
   rm -f -- "${signature}"
   printf '%s' "${GPG_KEY_PASSWORD}" | gpg \
     --batch \
@@ -66,7 +77,7 @@ for artifact in "${artifacts[@]}"; do
     --pinentry-mode loopback \
     --passphrase-fd 0 \
     --local-user "${expected_fingerprint}" \
-    --armor \
+    "${signature_format[@]}" \
     --detach-sign \
     --output "${signature}" \
     "${artifact}"
@@ -74,7 +85,7 @@ for artifact in "${artifacts[@]}"; do
 done
 
 for artifact in "${artifacts[@]}"; do
-  [[ -s "${artifact}.asc" ]] || {
+  [[ -s "${artifact}.${signature_extension}" ]] || {
     echo "error: missing detached signature for ${artifact}" >&2
     exit 1
   }

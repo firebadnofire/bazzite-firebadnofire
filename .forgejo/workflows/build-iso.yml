@@ -1,11 +1,11 @@
 ---
-name: Build and release disk artifacts
+name: Build and release installer ISO
 
 on:
   workflow_dispatch:
 
 concurrency:
-  group: disk-${{ github.ref }}
+  group: iso-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -17,7 +17,7 @@ env:
 
 jobs:
   prepare:
-    name: Resolve stable image digest
+    name: Resolve stable image digest and warm cache
     runs-on: ubuntu-22.04
     permissions:
       contents: read
@@ -50,12 +50,15 @@ jobs:
         run: |
           set -Eeuo pipefail
           [[ "$(uname -m)" == "x86_64" ]] || {
-            echo "error: disk artifacts only support x86_64" >&2
+            echo "error: installer ISO builds only support x86_64" >&2
             exit 1
           }
           docker info >/dev/null
           docker buildx version
           docker run --rm "${DOCKER_SMOKE_IMAGE}"
+          docker run --rm --privileged --entrypoint /usr/bin/bash \
+            "${BIB_IMAGE}" -c \
+            'command -v podman; command -v flock; command -v bootc-image-builder'
 
       - name: Resolve the stable image digest
         id: image
@@ -76,7 +79,7 @@ jobs:
           daemon_id="$(docker info --format '{{.ID}}')"
           [[ -n "${daemon_id}" ]]
           echo "daemon_id=${daemon_id}" >> "${GITHUB_OUTPUT}"
-          echo "Disk artifacts will use ${IMAGE_REPOSITORY}@${digest}"
+          echo "Installer ISO will use ${IMAGE_REPOSITORY}@${digest}"
 
       - name: Warm the persistent bootc source-image cache
         shell: bash
@@ -86,7 +89,7 @@ jobs:
           set -Eeuo pipefail
           [[ "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
           source_image="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
-          cache_container="bib-cache-warm-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cache_container="bib-cache-warm-iso-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           cleanup() {
             if docker container inspect "${cache_container}" >/dev/null 2>&1 && \
               ! docker rm -f "${cache_container}" >/dev/null; then
@@ -148,26 +151,12 @@ jobs:
             ' >/dev/null
           docker start --attach "${cache_container}"
 
-  disk:
-    name: ${{ matrix.artifact }} (x86_64)
+  iso:
+    name: Installer ISO (x86_64)
     needs: prepare
     runs-on: ubuntu-22.04
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - artifact: qcow2
-            type: qcow2
-            config: disk_config/disk.toml
-            source: output/qcow2/disk.qcow2
-            extension: qcow2
-          - artifact: installer-iso
-            type: anaconda-iso
-            config: disk_config/iso.toml
-            source: output/bootiso/install.iso
-            extension: iso
 
     steps:
       - name: Bootstrap the bare Ubuntu runner
@@ -227,7 +216,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           [[ "$(uname -m)" == "x86_64" ]] || {
-            echo "error: disk artifacts only support x86_64" >&2
+            echo "error: installer ISO builds only support x86_64" >&2
             exit 1
           }
           command -v docker >/dev/null || {
@@ -268,32 +257,26 @@ jobs:
         env:
           IMAGE_DIGEST: ${{ needs.prepare.outputs.image_digest }}
           HANDOFF_DAEMON_ID: ${{ needs.prepare.outputs.daemon_id }}
+          HANDOFF_FORMATS: iso
         run: bash scripts/disk-handoff.sh check
 
-      - name: Build ${{ matrix.artifact }}
+      - name: Build installer ISO
         shell: bash
         env:
-          ARTIFACT_TYPE: ${{ matrix.type }}
-          CONFIG_FILE: ${{ matrix.config }}
           IMAGE_DIGEST: ${{ needs.prepare.outputs.image_digest }}
-          OUTPUT_EXTENSION: ${{ matrix.extension }}
-          OUTPUT_SOURCE: ${{ matrix.source }}
         run: |
           set -Eeuo pipefail
           [[ "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
           source_image="${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
-          output_volume="bib-output-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARTIFACT_TYPE}"
-          storage_volume="bib-storage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARTIFACT_TYPE}"
-          container="bib-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${ARTIFACT_TYPE}"
+          output_volume="bib-output-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-anaconda-iso"
+          storage_volume="bib-storage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-anaconda-iso"
+          container="bib-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-anaconda-iso"
           helper="${container}-copy"
           storage_helper="${container}-storage"
           diagnostic_helper="${container}-diagnostics"
           cleanup() {
             for cleanup_container in \
-              "${container}" \
-              "${helper}" \
-              "${storage_helper}" \
-              "${diagnostic_helper}"; do
+              "${container}" "${helper}" "${storage_helper}" "${diagnostic_helper}"; do
               if docker container inspect "${cleanup_container}" >/dev/null 2>&1 && \
                 ! docker rm -f "${cleanup_container}" >/dev/null; then
                 echo "warning: could not remove ${cleanup_container}" >&2
@@ -307,10 +290,6 @@ jobs:
             done
           }
           diagnose_storage() {
-            if ! docker volume inspect "${storage_volume}"; then
-              echo "error: Docker storage volume is unavailable: ${storage_volume}" >&2
-              return 1
-            fi
             docker create --name "${diagnostic_helper}" \
               --privileged \
               --network host \
@@ -324,16 +303,13 @@ jobs:
                 set -Eeuo pipefail
                 exec 9>/var/cache/bib-cache-lock/store.lock
                 flock --shared 9
-                echo "Podman store diagnostics:"
                 podman info --debug
-                echo "Writable and read-only cached images:"
                 podman images --digests --no-trunc
                 podman image exists "${SOURCE_IMAGE}"
                 podman image inspect --format \
                   "id={{.Id}} digest={{.Digest}}" "${SOURCE_IMAGE}"
-                echo "Writable storage directories:"
                 find /var/lib/containers/storage \
-                  -mindepth 1 -maxdepth 2 -type d -print | sort | sed -n '1,80p'
+                  -mindepth 1 -maxdepth 2 -type d -print | sort | sed -n "1,80p"
                 df -hT /var/lib/containers/storage
                 du -sh /var/cache/bib-image-store
               ' >/dev/null
@@ -345,7 +321,7 @@ jobs:
             status=$?
             if [[ "${status}" -ne 0 ]] && \
               docker volume inspect "${storage_volume}" >/dev/null 2>&1; then
-              echo "error: disk build failed; collecting container-storage diagnostics" >&2
+              echo "error: ISO build failed; collecting container-storage diagnostics" >&2
               if ! diagnose_storage; then
                 echo "warning: container-storage diagnostics also failed" >&2
               fi
@@ -362,7 +338,6 @@ jobs:
           [[ "$(docker volume inspect --format '{{index .Labels "bib-cache.role"}}' \
             "${BIB_CACHE_LOCK_VOLUME}")" == lock ]]
 
-          echo "Verifying ${source_image} in the persistent read-only cache"
           docker create --name "${storage_helper}" \
             --privileged \
             --network host \
@@ -378,75 +353,67 @@ jobs:
               flock --shared 9
               podman image exists "${SOURCE_IMAGE}"
               podman image inspect --format \
-                "Cache reuse: id={{.Id}} digest={{.Digest}}" \
-                "${SOURCE_IMAGE}"
-              echo "Read-only images visible through additionalimagestores:"
+                "Cache reuse: id={{.Id}} digest={{.Digest}}" "${SOURCE_IMAGE}"
               podman images --filter readonly=true --digests --no-trunc
             ' >/dev/null
           docker cp disk_config/ci-storage.conf \
             "${storage_helper}:/etc/containers/storage.conf"
           docker start --attach "${storage_helper}"
           docker rm "${storage_helper}" >/dev/null
-          diagnose_storage
-          docker rm "${diagnostic_helper}" >/dev/null
 
           docker create --name "${container}" \
             --privileged \
             --network host \
             --security-opt label=type:unconfined_t \
-            --env "ARTIFACT_TYPE=${ARTIFACT_TYPE}" \
             --env "SOURCE_IMAGE=${source_image}" \
             --volume "${output_volume}:/output" \
             --volume "${storage_volume}:/var/lib/containers/storage" \
             --volume "${BIB_CACHE_VOLUME}:/var/cache/bib-image-store:ro" \
             --volume "${BIB_CACHE_LOCK_VOLUME}:/var/cache/bib-cache-lock" \
             --entrypoint /usr/bin/bash \
-            "${BIB_IMAGE}" \
-            -c '
+            "${BIB_IMAGE}" -c '
               set -Eeuo pipefail
               exec 9>/var/cache/bib-cache-lock/store.lock
               echo "Waiting for shared bootc source-cache lock"
               flock --shared 9
               podman image exists "${SOURCE_IMAGE}"
-              echo "Building from cached exact source ${SOURCE_IMAGE}"
+              echo "Building installer ISO from cached exact source ${SOURCE_IMAGE}"
               bootc-image-builder \
-                --type "${ARTIFACT_TYPE}" \
+                --type anaconda-iso \
                 --rootfs btrfs \
                 --use-librepo=true \
                 "${SOURCE_IMAGE}"
             ' >/dev/null
           docker cp disk_config/ci-storage.conf \
             "${container}:/etc/containers/storage.conf"
-          docker cp "${CONFIG_FILE}" "${container}:/config.toml"
+          docker cp disk_config/iso.toml "${container}:/config.toml"
           docker start --attach "${container}"
 
           mkdir -p output release-input
           docker create --name "${helper}" --volume "${output_volume}:/output:ro" \
             --entrypoint /usr/bin/true "${BIB_IMAGE}" >/dev/null
           docker cp "${helper}:/output/." output/
-
-          [[ -s "${OUTPUT_SOURCE}" ]] || {
-            echo "error: bootc-image-builder did not produce ${OUTPUT_SOURCE}" >&2
+          [[ -s output/bootiso/install.iso ]] || {
+            echo "error: bootc-image-builder did not produce output/bootiso/install.iso" >&2
             find output -maxdepth 3 -type f -print >&2
             exit 1
           }
           short_sha="${GITHUB_SHA:0:12}"
           digest_hex="${IMAGE_DIGEST#sha256:}"
-          install -m 0644 "${OUTPUT_SOURCE}" \
-            "release-input/bazzite-firebadnofire-${short_sha}-${digest_hex:0:12}.${OUTPUT_EXTENSION}"
+          install -m 0644 output/bootiso/install.iso \
+            "release-input/bazzite-firebadnofire-${short_sha}-${digest_hex:0:12}.iso"
 
-      - name: Stage ${{ matrix.artifact }} on the dedicated Docker daemon
+      - name: Stage installer ISO on the dedicated Docker daemon
         shell: bash
         env:
           IMAGE_DIGEST: ${{ needs.prepare.outputs.image_digest }}
           HANDOFF_DAEMON_ID: ${{ needs.prepare.outputs.daemon_id }}
-          OUTPUT_EXTENSION: ${{ matrix.extension }}
-        run: bash scripts/disk-handoff.sh stage "${OUTPUT_EXTENSION}"
+          HANDOFF_FORMATS: iso
+        run: bash scripts/disk-handoff.sh stage iso
 
   release:
-    name: Sign and publish Forgejo release
-    needs: [prepare, disk]
-    # Still run cleanup after a failed matrix build; publication is gated below.
+    name: Sign and publish installer ISO release
+    needs: [prepare, iso]
     if: ${{ always() && needs.prepare.result == 'success' }}
     runs-on: ubuntu-22.04
     permissions:
@@ -454,6 +421,7 @@ jobs:
     env:
       IMAGE_DIGEST: ${{ needs.prepare.outputs.image_digest }}
       HANDOFF_DAEMON_ID: ${{ needs.prepare.outputs.daemon_id }}
+      HANDOFF_FORMATS: iso
 
     steps:
       - name: Bootstrap release tooling
@@ -470,13 +438,7 @@ jobs:
           fi
           ${SUDO} apt-get update
           ${SUDO} apt-get install -y --no-install-recommends \
-            ca-certificates \
-            curl \
-            docker.io \
-            git \
-            gnupg \
-            jq \
-            xz-utils
+            ca-certificates curl docker.io git gnupg jq xz-utils
 
           readonly node_version=v24.17.0
           readonly node_archive="node-${node_version}-linux-x64.tar.xz"
@@ -489,14 +451,13 @@ jobs:
           ${SUDO} tar --extract --xz --file "/tmp/${node_archive}" \
             --directory /usr/local --strip-components=1
           node --version
+          docker info >/dev/null
 
       - name: Check out the exact triggering revision
         shell: bash
         run: |
           set -Eeuo pipefail
           : "${GITHUB_WORKSPACE:?Forgejo did not provide GITHUB_WORKSPACE}"
-          : "${GITHUB_REF:?Forgejo did not provide GITHUB_REF}"
-          : "${GITHUB_SHA:?Forgejo did not provide GITHUB_SHA}"
           repository="${GITHUB_SERVER_URL:-https://pubcode.archuser.org}/${GITHUB_REPOSITORY:-universalblue/bazzite-firebadnofire}.git"
           cd "${GITHUB_WORKSPACE}"
           git init
@@ -509,77 +470,64 @@ jobs:
           git checkout --detach "${GITHUB_SHA}"
           [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]]
 
-      - name: Require both matrix builds and verify local handoff
+      - name: Require the ISO build and verify local handoff
         shell: bash
         env:
-          DISK_RESULT: ${{ needs.disk.result }}
+          ISO_RESULT: ${{ needs.iso.result }}
         run: |
           set -Eeuo pipefail
-          [[ "${DISK_RESULT}" == success ]] || {
-            echo "error: both matrix builds must succeed before signing or publishing" >&2
+          [[ "${ISO_RESULT}" == success ]] || {
+            echo "error: the ISO build must succeed before signing or publishing" >&2
             exit 1
           }
           bash scripts/disk-handoff.sh collect
 
-      - name: Assemble and checksum the release
+      - name: Assemble and checksum the ISO release
         id: metadata
         shell: bash
-        env:
-          IMAGE_DIGEST: ${{ needs.prepare.outputs.image_digest }}
         run: |
           set -Eeuo pipefail
           short_sha="${GITHUB_SHA:0:12}"
           digest_hex="${IMAGE_DIGEST#sha256:}"
           release_id="${short_sha}-${digest_hex:0:12}"
-          qcow2="bazzite-firebadnofire-${release_id}.qcow2"
           iso="bazzite-firebadnofire-${release_id}.iso"
-          [[ -s "release/${qcow2}" ]]
           [[ -s "release/${iso}" ]]
-
-          mapfile -d '' -t payloads < <(
-            find release -maxdepth 1 -type f -print0 | sort -z
-          )
-          [[ "${#payloads[@]}" -eq 2 ]] || {
-            echo "error: expected exactly the QCOW2 and ISO before signing" >&2
+          [[ "$(find release -maxdepth 1 -type f | wc -l)" -eq 1 ]] || {
+            echo "error: expected only the unsigned ISO before checksumming" >&2
             find release -maxdepth 1 -type f -print >&2
             exit 1
           }
-
           (
             cd release
-            sha256sum "${qcow2}" "${iso}" > SHA256SUMS
+            sha256sum "${iso}" > SHA256SUMS
             sha256sum --check --strict SHA256SUMS
           )
-          [[ "${IMAGE_DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
           echo "release_id=${release_id}" >> "${GITHUB_OUTPUT}"
+          echo "iso=${iso}" >> "${GITHUB_OUTPUT}"
 
-      - name: Sign and verify every downloadable artifact
+      - name: Sign and cryptographically verify every downloadable asset
         shell: bash
         env:
           GPG_KEY_B64: ${{ secrets.GPG_KEY_B64 }}
           GPG_KEY_PASSWORD: ${{ secrets.GPG_KEY_PASSWORD }}
-        run: bash scripts/sign-release-artifacts.sh release
+        run: bash scripts/sign-release-artifacts.sh release sig
 
-      - name: Verify release completeness and write release notes
+      - name: Prove exact signed release completeness and write release notes
         shell: bash
         env:
-          IMAGE_DIGEST: ${{ needs.prepare.outputs.image_digest }}
+          RELEASE_ID: ${{ steps.metadata.outputs.release_id }}
+          ISO_FILE: ${{ steps.metadata.outputs.iso }}
         run: |
           set -Eeuo pipefail
-          short_sha="${GITHUB_SHA:0:12}"
-          digest_hex="${IMAGE_DIGEST#sha256:}"
-          release_id="${short_sha}-${digest_hex:0:12}"
           expected=(
-            "bazzite-firebadnofire-${release_id}.qcow2"
-            "bazzite-firebadnofire-${release_id}.qcow2.asc"
-            "bazzite-firebadnofire-${release_id}.iso"
-            "bazzite-firebadnofire-${release_id}.iso.asc"
-            "SHA256SUMS"
-            "SHA256SUMS.asc"
+            "${ISO_FILE}"
+            "${ISO_FILE}.sig"
+            SHA256SUMS
+            SHA256SUMS.sig
           )
           for asset in "${expected[@]}"; do
             [[ -s "release/${asset}" ]] || {
-              echo "error: required signed release asset is missing: ${asset}" >&2
+              echo "error: required signed release asset is missing or empty: ${asset}" >&2
               exit 1
             }
           done
@@ -591,78 +539,67 @@ jobs:
             find release -maxdepth 1 -type f -print >&2
             exit 1
           }
+          for file in "${release_files[@]}"; do
+            if [[ "${file}" == *.sig ]]; then
+              [[ -s "${file%.sig}" ]] || {
+                echo "error: signature has no payload: ${file}" >&2
+                exit 1
+              }
+            else
+              [[ -s "${file}.sig" ]] || {
+                echo "error: unsigned release asset: ${file}" >&2
+                exit 1
+              }
+            fi
+          done
 
           cat > release-notes.md <<EOF
-          # bazzite-firebadnofire disk artifacts
+          # bazzite-firebadnofire installer ISO
 
-          This release contains x86_64 QCOW2 and Anaconda installer ISO artifacts
-          generated from the published OCI image at this exact digest:
-
-              ${IMAGE_REPOSITORY}@${IMAGE_DIGEST}
-
+          ISO: ${ISO_FILE}
+          Source OCI image: ${IMAGE_REPOSITORY}@${IMAGE_DIGEST}
           Repository revision: ${GITHUB_SHA}
 
-          SHA256SUMS covers both disk artifacts. Each QCOW2, ISO, and SHA256SUMS
-          file has its own detached ASCII-armored OpenPGP signature (.asc).
+          Verify the ISO checksum:
 
-          ## Signature Verification
+              sha256sum --check --strict SHA256SUMS
 
-          The expected signing identity is William Jones (Yubikey generated GPG key).
-          The expected full fingerprint is:
+          Every downloadable file has a detached binary OpenPGP signature with
+          the .sig extension. Import and verify the expected signing key:
+
+              gpg --keyserver hkps://keys.openpgp.org --recv-keys 7D6EF134D851C8DA0862D97494F31AF374E2EE3C
+              gpg --fingerprint 7D6EF134D851C8DA0862D97494F31AF374E2EE3C
+              gpg --verify ./${ISO_FILE}.sig ./${ISO_FILE}
+              gpg --verify ./SHA256SUMS.sig ./SHA256SUMS
+
+          The complete expected fingerprint is:
 
               7D6E F134 D851 C8DA 0862 D974 94F3 1AF3 74E2 EE3C
 
-          Import from a keyserver:
-
-              gpg --keyserver hkps://keys.openpgp.org --recv-keys 7D6EF134D851C8DA0862D97494F31AF374E2EE3C
-              gpg --keyserver hkps://keyserver.ubuntu.com --recv-keys 7D6EF134D851C8DA0862D97494F31AF374E2EE3C
-
-          Or import https://archuser.org/gpg/william.asc directly. Public keys are
-          also available from https://github.com/firebadnofire.gpg and
-          https://archuser.org/gpg.key.
-
-          On Windows, Kleopatra is included with Gpg4win. Install it from
-          https://www.gpg4win.org/ or with:
-
-              winget install GnuPG.Gpg4win
-
-          A PowerShell direct-import example is:
-
-              Invoke-WebRequest -Uri 'https://archuser.org/gpg/william.asc' -OutFile 'william.asc'
-              gpg --import .\william.asc
-
-          Verify the full fingerprint before trusting a signature:
-
-              gpg --fingerprint 7D6EF134D851C8DA0862D97494F31AF374E2EE3C
-              gpg --verify ./<artifact>.asc ./<artifact>
-
-          A Good signature message alone is not sufficient; the key must match the
-          complete expected fingerprint above.
-
-          Cosign is separate from these file signatures. Cosign authenticates the
-          published OCI image digest; the OpenPGP .asc files authenticate these
-          downloadable disk artifacts. After cloning this repository, verify the
-          OCI digest with its checked-in cosign.pub key:
+          A Good signature is insufficient unless the full fingerprint matches.
+          These OpenPGP signatures authenticate the downloadable files. Cosign
+          separately authenticates the source OCI image digest; after cloning
+          this repository, verify it with:
 
               cosign verify --key cosign.pub ${IMAGE_REPOSITORY}@${IMAGE_DIGEST}
           EOF
 
-      - name: Publish the Forgejo release
+      - name: Publish the Forgejo ISO release
         uses: https://code.forgejo.org/actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd # v2.13.4
         with:
           direction: upload
           url: ${{ forgejo.server_url }}
           repo: ${{ forgejo.repository }}
           token: ${{ forgejo.token }}
-          tag: disk-${{ steps.metadata.outputs.release_id }}
-          title: bazzite-firebadnofire disk ${{ steps.metadata.outputs.release_id }}
+          tag: iso-${{ steps.metadata.outputs.release_id }}
+          title: bazzite-firebadnofire ISO ${{ steps.metadata.outputs.release_id }}
           sha: ${{ github.sha }}
           release-dir: release
           release-notes-file: release-notes.md
           override: true
           hide-archive-link: true
 
-      - name: Clean up this run's disk handoff volumes
+      - name: Clean up this run's ISO handoff volume
         if: ${{ always() }}
         shell: bash
         run: bash scripts/disk-handoff.sh cleanup

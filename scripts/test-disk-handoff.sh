@@ -52,4 +52,16 @@ if bash "${script}" collect; then
 fi
 bash "${script}" cleanup
 bash "${script}" cleanup
+
+# ISO-only workflows must be able to collect and clean a single format without
+# requiring a QCOW2 volume from the same run.
+export GITHUB_RUN_ID="${RANDOM}${RANDOM}"
+export HANDOFF_FORMATS=iso
+rm -rf release release-input
+mkdir release-input
+printf 'iso-only fixture\n' > "release-input/${prefix}.iso"
+bash "${script}" stage iso
+bash "${script}" collect
+cmp "release-input/${prefix}.iso" "release/${prefix}.iso"
+bash "${script}" cleanup
 echo 'disk handoff integration tests passed'
