@@ -1,5 +1,6 @@
 # Additional RPM packages baked into the base image.
 vim
+nano
 bind-utils
 nmap
 htop
