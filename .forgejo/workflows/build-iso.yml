@@ -383,6 +383,7 @@ jobs:
             --privileged \
             --network host \
             --security-opt label=type:unconfined_t \
+            --env "BUILD_SOURCE_IMAGE=${build_source_image}" \
             --env "SOURCE_IMAGE=${source_image}" \
             --volume "${output_volume}:/output" \
             --volume "${storage_volume}:/var/lib/containers/storage" \
@@ -401,30 +402,70 @@ jobs:
               echo "Canonical registry source: ${SOURCE_IMAGE}"
               echo "Cached source image ID: ${cached_image_id}"
 
-              # Reflink only immutable containers/storage image data. Do not
-              # copy the graphroot-specific libpod database into the job store.
-              [[ -z "$(find /var/lib/containers/storage \
-                -mindepth 1 -maxdepth 1 -print -quit)" ]] || {
-                echo "error: writable container storage is not empty before source promotion" >&2
+              echo "Writable images before source promotion:"
+              podman images --filter readonly=false --digests --no-trunc
+              mapfile -t writable_image_ids_before < <(
+                podman images --filter readonly=false --no-trunc \
+                  --format "{{.Id}}" | sort -u
+              )
+              mapfile -t existing_build_source_ids < <(
+                podman images --filter readonly=false --no-trunc \
+                  --filter "reference=${BUILD_SOURCE_IMAGE}" \
+                  --format "{{.Id}}" | sort -u
+              )
+              [[ "${#existing_build_source_ids[@]}" -le 1 ]] || {
+                echo "error: local build source resolves to multiple writable images" >&2
                 exit 1
               }
-              echo "Promoting cached image data into the writable store with reflinks"
-              for image_store_path in overlay overlay-images overlay-layers; do
-                [[ -d "/var/cache/bib-image-store/${image_store_path}" ]] || {
-                  echo "error: cached image store is missing ${image_store_path}" >&2
+
+              build_source_already_present=false
+              if [[ "${#existing_build_source_ids[@]}" -eq 1 ]]; then
+                existing_build_source_id="$(podman image inspect \
+                  --format "{{.Id}}" "${BUILD_SOURCE_IMAGE}")"
+                [[ "${existing_build_source_ids[0]}" == \
+                  "${existing_build_source_id}" ]]
+                [[ "${existing_build_source_id}" == "${cached_image_id}" ]] || {
+                  echo "error: existing local build source does not match the digest-pinned cached image" >&2
                   exit 1
                 }
-                cp -a --reflink=always \
-                  "/var/cache/bib-image-store/${image_store_path}" \
-                  /var/lib/containers/storage/
-              done
+                build_source_already_present=true
+                echo "Existing writable build source already matches cached image ID"
+              else
+                [[ "${#writable_image_ids_before[@]}" -eq 0 ]] || {
+                  echo "error: writable store contains images but not the expected local build source" >&2
+                  exit 1
+                }
+
+                # Reflink only immutable containers/storage image data. Podman
+                # may already have initialized these directories and its libpod
+                # database; zero writable images makes merging image data safe.
+                echo "Promoting cached image data into the writable store with reflinks"
+                for image_store_path in overlay overlay-images overlay-layers; do
+                  [[ -d "/var/cache/bib-image-store/${image_store_path}" ]] || {
+                    echo "error: cached image store is missing ${image_store_path}" >&2
+                    exit 1
+                  }
+                  install -d "/var/lib/containers/storage/${image_store_path}"
+                  cp -a --reflink=always \
+                    "/var/cache/bib-image-store/${image_store_path}/." \
+                    "/var/lib/containers/storage/${image_store_path}/"
+                done
+              fi
 
               # Make osbuild resolve layers only from the complete writable copy.
               install -m 0644 /etc/containers/writable-storage.conf \
                 /etc/containers/storage.conf
               podman image exists "${SOURCE_IMAGE}"
+              writable_source_image_id="$(podman image inspect \
+                --format "{{.Id}}" "${SOURCE_IMAGE}")"
+              [[ "${writable_source_image_id}" == "${cached_image_id}" ]] || {
+                echo "error: writable canonical source does not match the cached image ID" >&2
+                exit 1
+              }
               echo "Writable store resolves canonical source: ${SOURCE_IMAGE}"
-              podman tag "${SOURCE_IMAGE}" "${BUILD_SOURCE_IMAGE}"
+              if [[ "${build_source_already_present}" == false ]]; then
+                podman tag "${SOURCE_IMAGE}" "${BUILD_SOURCE_IMAGE}"
+              fi
               podman image exists "${BUILD_SOURCE_IMAGE}"
               writable_image_id="$(podman image inspect --format "{{.Id}}" \
                 "${BUILD_SOURCE_IMAGE}")"
@@ -436,7 +477,8 @@ jobs:
               [[ "${writable_image_ids[0]}" == "${writable_image_id}" ]]
               echo "Writable build source: ${BUILD_SOURCE_IMAGE}"
               echo "Writable build source image ID: ${writable_image_id}"
-              [[ "${cached_image_id}" == "${writable_image_id}" ]] || {
+              [[ "${writable_source_image_id}" == "${writable_image_id}" && \
+                "${cached_image_id}" == "${writable_image_id}" ]] || {
                 echo "error: writable build source does not match the digest-pinned cached image" >&2
                 exit 1
               }

@@ -574,8 +574,15 @@ the name while still leaving osbuild unable to find the read-only layers.
 Under the existing shared cache lock, each job therefore resolves the
 digest-pinned cached image to its full Podman image ID and uses
 `cp -a --reflink=always` to copy only the cache's immutable `overlay`,
-`overlay-images`, and `overlay-layers` data into its empty disposable store.
-It deliberately does not copy Podman's graphroot-specific `libpod` database.
+`overlay-images`, and `overlay-layers` data into its disposable store.
+The earlier cache-verification and diagnostic Podman commands normally
+initialize that store's directories, locks, and graphroot-specific `libpod`
+database even when it contains no writable images. Promotion therefore checks
+the writable image inventory rather than filesystem emptiness and merges the
+cached image data into those initialized directories without copying `libpod`.
+If the deterministic local build reference already exists, its full image ID
+must match the cached image ID; otherwise a nonempty writable image inventory
+fails closed before the raw image-store merge.
 The Btrfs-backed runner makes this a copy-on-write local promotion rather than
 a second registry pull or a second fully allocated image. Reflink support and
 same-filesystem Docker volumes are therefore disk-builder runner requirements;
@@ -587,10 +594,10 @@ from the builder's resolution path, and creates
 `localhost/bazzite-firebadnofire-build-source:cached` in the writable store.
 The job requires that the local name appears in `readonly=false` output and
 that its full image ID exactly equals the cached digest-selected image ID. It
-then gives only this verified local name to bootc-image-builder. Any incomplete
-copy, missing name, ambiguous writable entry, or ID mismatch fails before
-manifest generation; the original registry digest remains the release's
-canonical source identity.
+then gives only this verified local name to bootc-image-builder. Any conflicting
+writable image, incomplete copy, missing name, ambiguous writable entry, or ID
+mismatch fails before manifest generation; the original registry digest
+remains the release's canonical source identity.
 
 The companion `bazzite-firebadnofire-bib-image-cache-lock-v1` volume contains
 the cross-container lock file. Cache refresh and maintenance take an exclusive

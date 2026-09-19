@@ -147,6 +147,10 @@ for required in (
     'disk_config/ci-writable-storage.conf',
     'podman tag "${SOURCE_IMAGE}" "${BUILD_SOURCE_IMAGE}"',
     'podman images --filter readonly=false',
+    'writable_image_ids_before',
+    'existing_build_source_ids',
+    'build_source_already_present',
+    'writable_source_image_id',
     '"${cached_image_id}" == "${writable_image_id}"',
     '"${BUILD_SOURCE_IMAGE}"',
     "actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd",
@@ -213,6 +217,10 @@ for required in (
     'disk_config/ci-writable-storage.conf',
     'podman tag "${SOURCE_IMAGE}" "${BUILD_SOURCE_IMAGE}"',
     'podman images --filter readonly=false',
+    'writable_image_ids_before',
+    'existing_build_source_ids',
+    'build_source_already_present',
+    'writable_source_image_id',
     '"${cached_image_id}" == "${writable_image_id}"',
     '"${BUILD_SOURCE_IMAGE}"',
     "bash scripts/sign-release-artifacts.sh release sig",
@@ -243,6 +251,14 @@ for workflow_name, workflow_text in (
     ("build-disk.yml", disk_workflow),
     ("build-iso.yml", iso_workflow),
 ):
+    if "writable container storage is not empty before source promotion" in workflow_text:
+        raise ValueError(
+            f"{workflow_name}: initialized storage metadata must not block promotion"
+        )
+    if workflow_text.count('--env "BUILD_SOURCE_IMAGE=${build_source_image}"') < 2:
+        raise ValueError(
+            f"{workflow_name}: builder and diagnostics must receive the local source name"
+        )
     if workflow_text.count('cp -a --reflink=always') != 1:
         raise ValueError(f"{workflow_name}: source promotion must occur exactly once")
     if workflow_text.count(

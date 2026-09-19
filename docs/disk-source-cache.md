@@ -35,11 +35,22 @@ digest name directly from an additional image store even when Podman can
 inspect it. A writable tag or a containers/storage copy made while that
 additional store remains visible is also insufficient: osbuild can resolve the
 image ID and still fail to find layers that remain owned by the read-only
-store. While holding the shared cache lock, the builder resolves the canonical
-digest reference to a full Podman image ID, requires an empty per-job store,
-and reflink-copies the cache's immutable `overlay`, `overlay-images`, and
-`overlay-layers` directories into it. Podman's graphroot-specific `libpod`
-database is deliberately excluded.
+store. The cache-verification helper and, in the combined workflow, the
+pre-build diagnostic helper run Podman against the per-job volume first. Podman
+therefore initializes ordinary storage directories, locks, and a `libpod`
+database even though `podman images --filter readonly=false` is empty. While
+holding the shared cache lock, the builder resolves the canonical digest
+reference to a full Podman image ID and checks actual writable images instead
+of filesystem entries. With no local build reference and no writable images,
+it reflink-merges the cache's immutable `overlay`, `overlay-images`, and
+`overlay-layers` contents into the initialized directories. Podman's
+graphroot-specific `libpod` database is deliberately retained rather than
+copied from the cache.
+
+If `localhost/bazzite-firebadnofire-build-source:cached` already exists, its
+full image ID must match the cached image ID and promotion is skipped. If it is
+absent but any other writable image exists, promotion fails closed because a
+raw image-store merge must not overwrite unrelated image metadata.
 
 The builder then switches from `ci-storage.conf` to the primary-store-only
 `ci-writable-storage.conf`, verifies that the digest reference resolves from
@@ -190,7 +201,10 @@ blob copies. In the second run, verify all of the following in the Actions log:
 4. Both matrix jobs print `Cache reuse:` for that exact digest and list it
    under `Read-only images visible through additionalimagestores`.
 5. Each job prints `Canonical registry source: ...@sha256:...`, the cached image
-   ID, `Promoting cached image data into the writable store with reflinks`,
+   ID, `Writable images before source promotion:` followed by either an empty
+   table or the already-verified local source, and then either `Promoting cached
+   image data into the writable store with reflinks` or `Existing writable
+   build source already matches cached image ID`,
    `Writable store resolves canonical source: ...@sha256:...`,
    `Writable build source: localhost/bazzite-firebadnofire-build-source:cached`,
    the writable image ID, and `Confirmed cached and writable-store image IDs
