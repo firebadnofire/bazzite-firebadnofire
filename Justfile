@@ -57,9 +57,9 @@ inspect target=("localhost/" + image_name) tag=default_tag:
         virt-manager plasma-login-manager bootc
       /usr/libexec/bazzite-firebadnofire-include-packages verify \
         /usr/share/bazzite-firebadnofire/include.txt
-      test -s /usr/share/bazzite-firebadnofire/hyprland.conf
+      test -s /usr/share/bazzite-firebadnofire/hyprland.lua
       Hyprland --verify-config --i-am-really-stupid \
-        --config /usr/share/bazzite-firebadnofire/hyprland.conf
+        --config /usr/share/bazzite-firebadnofire/hyprland.lua
       test -x /usr/bin/looking-glass-client
       test -x /usr/libexec/xdg-desktop-portal-hyprland
       test -x /usr/libexec/hyprpolkitagent

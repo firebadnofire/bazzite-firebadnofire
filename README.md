@@ -22,7 +22,7 @@ installing it on a workstation.
 | Architecture | x86_64 only |
 | Base | Digest-pinned `ghcr.io/ublue-os/bazzite-nvidia-open:stable` |
 | GPU target | NVIDIA Turing and newer, including GeForce RTX; other hardware inherits the upstream Bazzite behavior |
-| Desktop | Hyprland 0.56-compatible configuration with XWayland, adapted from the operator's workstation setup |
+| Desktop | Hyprland 0.56-compatible Lua configuration with XWayland, adapted from the operator's workstation setup |
 | Gaming | Inherited Bazzite Steam, Gamescope, codecs, controller support, and gaming tools |
 | Audio/video | Inherited PipeWire/WirePlumber plus pavucontrol and playerctl |
 | Desktop plumbing | Waybar, Fuzzel, SwayNotificationCenter, NetworkManager and Bluetooth applets, portals, polkit agent, clipboard history, screenshots, idle locking |
@@ -61,11 +61,13 @@ The display-manager entry launches
 `/usr/libexec/bazzite-firebadnofire-start-hyprland`. On first launch it copies
 the immutable Hyprland, Hypridle, Hyprlock, Hyprpaper, and Waybar defaults into
 `~/.config/` only when the corresponding user file does not already exist.
-Image updates never replace user configuration. An existing `hyprland.lua` is
-also treated as an intentional user configuration and remains supported.
+Image updates never replace edited user configuration. Exact, unmodified
+Hyprland defaults from earlier image revisions are upgraded to the current Lua
+default so corrected bindings reach existing installations. A user-authored
+legacy `hyprland.conf` is preserved and passed explicitly to Hyprland.
 `just inspect` and Forgejo's **Inspect image contract** step validate the
-shipped `/usr/share/bazzite-firebadnofire/hyprland.conf` with Hyprland's
-`--verify-config` mode; the legacy Lua filename is not an image default.
+shipped `/usr/share/bazzite-firebadnofire/hyprland.lua` with Hyprland's
+`--verify-config` mode.
 
 The default session starts:
 
@@ -93,7 +95,7 @@ Useful default bindings, adapted from the operator's workstation setup:
 | Binding | Action |
 | --- | --- |
 | `Super+Q` | Kitty terminal |
-| `Super+R` | Fuzzel launcher |
+| `Super+R` | Fuzzel application launcher |
 | `Super+E` | Dolphin file manager |
 | `Super+C` | Close the focused window |
 | `Super+Z` | Toggle fullscreen |
@@ -385,7 +387,7 @@ Do not put their values in files, workflow logs, commits, or issue text.
 
 | Secret | Purpose | Required for |
 | --- | --- | --- |
-| `REGISTRY_TOKEN` | Sensitive Forgejo PAT with `write:package` scope, owned by `firebadnofire` and permitted to publish packages for `universalblue` | Main-branch push, daily schedule, or main-ref manual image publication |
+| `REGISTRY_TOKEN` | Sensitive Forgejo PAT with `write:package` scope, owned by `firebadnofire` and permitted to publish packages for `universalblue` | Main-branch push, daily schedule, or manual image publication |
 | `COSIGN_PRIVATE_KEY` | Sensitive contents of the private `cosign.key` | OCI signing in production image runs |
 | `COSIGN_PASSWORD` | Sensitive password for `COSIGN_PRIVATE_KEY` | OCI signing in production image runs |
 | `GPG_KEY_B64` | Sensitive base64 encoding of the private OpenPGP key whose primary fingerprint is `7D6EF134D851C8DA0862D97494F31AF374E2EE3C` | Manual disk release signing |
@@ -436,13 +438,13 @@ commit a private key.
 - a push to `main` performs those checks, publishes, signs, and verifies;
 - a schedule runs every day at **04:17 UTC** from the current default-branch
   revision and follows the same production path as a push to `main`;
-- a manual dispatch builds the selected ref and publishes only when the ref is
-  `main`.
+- a manual dispatch builds the selected ref and follows the same production
+  publication path.
 
 Markdown-only pushes to `main` are ignored, but the independent daily schedule
 still runs. Start a manual build from **Actions → Validate, build, publish, and
-sign → Run workflow**, selecting `main` for a production run. Before a push,
-schedule, or main-ref manual production run, configure `REGISTRY_TOKEN`,
+sign → Run workflow**, selecting the ref to publish. Before a push, schedule,
+or manual production run, configure `REGISTRY_TOKEN`,
 `COSIGN_PRIVATE_KEY`, and `COSIGN_PASSWORD`. For a non-publishing build
 verification, open or update a pull request targeting `main`; pull-request runs
 build and inspect the image but do not receive or use publication secrets.

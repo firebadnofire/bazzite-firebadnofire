@@ -18,7 +18,7 @@ required_files=(
     system_files/usr/lib/tmpfiles.d/bazzite-firebadnofire.conf
     system_files/usr/libexec/bazzite-firebadnofire-rotate-wallpaper
     system_files/usr/share/bazzite-firebadnofire/hypridle.conf
-    system_files/usr/share/bazzite-firebadnofire/hyprland.conf
+    system_files/usr/share/bazzite-firebadnofire/hyprland.lua
     system_files/usr/share/bazzite-firebadnofire/hyprlock.conf
     system_files/usr/share/bazzite-firebadnofire/hyprpaper.conf
     system_files/usr/share/bazzite-firebadnofire/waybar/config.jsonc
@@ -95,8 +95,36 @@ except ModuleNotFoundError:
 
 import yaml
 
-hyprland_default = "/usr/share/bazzite-firebadnofire/hyprland.conf"
-obsolete_hyprland_default = hyprland_default.removesuffix(".conf") + ".lua"
+hyprland_default = "/usr/share/bazzite-firebadnofire/hyprland.lua"
+obsolete_hyprland_default = hyprland_default.removesuffix(".lua") + ".conf"
+hyprland_source = Path(
+    "system_files/usr/share/bazzite-firebadnofire/hyprland.lua"
+).read_text(encoding="utf-8")
+for required in (
+    'local terminal = "kitty"',
+    'local menu = "fuzzel"',
+    'hl.bind(mainMod .. " + Q", hl.dsp.exec_cmd(terminal))',
+    'hl.bind(mainMod .. " + R", hl.dsp.exec_cmd(menu))',
+):
+    if required not in hyprland_source:
+        raise ValueError(f"hyprland.lua: missing workstation contract: {required}")
+
+if Path("system_files/usr/share/bazzite-firebadnofire/hyprland.conf").exists():
+    raise ValueError("obsolete immutable Hyprland config is still shipped: hyprland.conf")
+
+launcher_source = Path(
+    "system_files/usr/libexec/bazzite-firebadnofire-start-hyprland"
+).read_text(encoding="utf-8")
+for managed_hash in (
+    "5ec8d97af63d235777bee5d57e25f9716560379f9b72894e44bda8805b113f3d",
+    "663538eaf801c9340bfcc030adfc7f58ac1f09dda89367e03959226f6aa6d660",
+):
+    if managed_hash not in launcher_source:
+        raise ValueError(
+            "Hyprland launcher is missing a managed-default migration fingerprint: "
+            f"{managed_hash}"
+        )
+
 contract_sources = {
     "Justfile": Path("Justfile").read_text(encoding="utf-8"),
     ".forgejo/workflows/build.yml": Path(".forgejo/workflows/build.yml").read_text(
@@ -157,7 +185,6 @@ for path in sorted(Path(".forgejo/workflows").glob("*.yml")):
 image_workflow = Path(".forgejo/workflows/build.yml").read_text(encoding="utf-8")
 for required in (
     'cron: "17 4 * * *"',
-    "github.event_name == 'schedule'",
     "--format '{{json .Manifest}}'",
     "cosign verify --key cosign.pub",
 ):
@@ -165,6 +192,23 @@ for required in (
         raise ValueError(f"build.yml: missing production contract: {required}")
 if "--raw | sha256sum" in image_workflow:
     raise ValueError("build.yml: registry digest must not be reconstructed by hashing raw output")
+
+image_document = yaml.safe_load(image_workflow)
+image_steps = {step["name"]: step for step in image_document["jobs"]["image"]["steps"]}
+publication_steps = (
+    "Log in to the Forgejo registry",
+    "Push the commit traceability tag and resolve its canonical digest",
+    "Install pinned Cosign",
+    "Sign and verify the published digest",
+    "Publish stream and immutable tags",
+)
+for step_name in publication_steps:
+    if image_steps[step_name].get("if") != "github.event_name != 'pull_request'":
+        raise ValueError(f"build.yml: {step_name} must publish for every non-PR event")
+if image_steps["Log out of registry"].get("if") != (
+    "always() && github.event_name != 'pull_request'"
+):
+    raise ValueError("build.yml: registry logout must always run after non-PR events")
 
 disk_workflow = Path(".forgejo/workflows/build-disk.yml").read_text(encoding="utf-8")
 for required in (

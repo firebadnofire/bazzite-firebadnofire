@@ -138,7 +138,7 @@ test -x /usr/bin/looking-glass-client
 test -x /usr/libexec/xdg-desktop-portal-hyprland
 test -x /usr/libexec/hyprpolkitagent
 test -f /usr/share/wayland-sessions/hyprland.desktop
-test -f /usr/share/bazzite-firebadnofire/hyprland.conf
+test -f /usr/share/bazzite-firebadnofire/hyprland.lua
 test -f /usr/share/bazzite-firebadnofire/hypridle.conf
 test -f /usr/share/bazzite-firebadnofire/hyprlock.conf
 test -f /usr/share/bazzite-firebadnofire/hyprpaper.conf

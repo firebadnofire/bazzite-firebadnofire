@@ -7,13 +7,27 @@ set -Eeuo pipefail
 readonly config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
 readonly config_dir="${config_home}/hypr"
 readonly defaults_dir="/usr/share/bazzite-firebadnofire"
+readonly lua_config="${config_dir}/hyprland.lua"
+readonly legacy_config="${config_dir}/hyprland.conf"
+
+# These identify the exact image-managed defaults shipped before this Lua
+# configuration. Never replace a file after the operator has changed it.
+readonly old_lua_sha256="5ec8d97af63d235777bee5d57e25f9716560379f9b72894e44bda8805b113f3d"
+readonly transitional_conf_sha256="663538eaf801c9340bfcc030adfc7f58ac1f09dda89367e03959226f6aa6d660"
 
 install -d -m 0700 "${config_dir}"
 
-# Never replace an operator's Hyprland configuration. A legacy .lua also
-# counts as an existing choice because Hyprland supports both formats.
-if [[ ! -e "${config_dir}/hyprland.lua" && ! -e "${config_dir}/hyprland.conf" ]]; then
-    install -m 0600 "${defaults_dir}/hyprland.conf" "${config_dir}/hyprland.conf"
+# Upgrade only exact, unmodified defaults from prior image revisions. The
+# transitional .conf may remain as a reference; Hyprland 0.55+ loads the new
+# Lua default. A user-authored legacy .conf is passed explicitly below.
+if [[ -f "${lua_config}" && ! -L "${lua_config}" ]] &&
+        [[ "$(sha256sum "${lua_config}" | awk '{print $1}')" == "${old_lua_sha256}" ]]; then
+    install -m 0600 "${defaults_dir}/hyprland.lua" "${lua_config}"
+elif [[ ! -e "${lua_config}" && -f "${legacy_config}" && ! -L "${legacy_config}" ]] &&
+        [[ "$(sha256sum "${legacy_config}" | awk '{print $1}')" == "${transitional_conf_sha256}" ]]; then
+    install -m 0600 "${defaults_dir}/hyprland.lua" "${lua_config}"
+elif [[ ! -e "${lua_config}" && ! -e "${legacy_config}" ]]; then
+    install -m 0600 "${defaults_dir}/hyprland.lua" "${lua_config}"
 fi
 
 for name in hypridle.conf hyprlock.conf hyprpaper.conf; do
@@ -30,4 +44,8 @@ fi
 
 install -d -m 0700 "${config_home}/wallpapers"
 
-exec /usr/bin/Hyprland
+if [[ -e "${lua_config}" ]]; then
+    exec /usr/bin/Hyprland
+fi
+
+exec /usr/bin/Hyprland --config "${legacy_config}"

@@ -151,9 +151,9 @@ jobs:
               virt-manager plasma-login-manager bootc
             /usr/libexec/bazzite-firebadnofire-include-packages verify \
               /usr/share/bazzite-firebadnofire/include.txt
-            test -s /usr/share/bazzite-firebadnofire/hyprland.conf
+            test -s /usr/share/bazzite-firebadnofire/hyprland.lua
             Hyprland --verify-config --i-am-really-stupid \
-              --config /usr/share/bazzite-firebadnofire/hyprland.conf
+              --config /usr/share/bazzite-firebadnofire/hyprland.lua
             test -x /usr/bin/looking-glass-client
             test -x /usr/libexec/xdg-desktop-portal-hyprland
             test -x /usr/libexec/hyprpolkitagent
@@ -173,7 +173,7 @@ jobs:
           '
 
       - name: Log in to the Forgejo registry
-        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request'
         shell: bash
         env:
           REGISTRY_USERNAME: firebadnofire
@@ -191,7 +191,7 @@ jobs:
 
       - name: Push the commit traceability tag and resolve its canonical digest
         id: publish
-        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -224,7 +224,7 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Install pinned Cosign
-        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -237,7 +237,7 @@ jobs:
           /tmp/cosign version
 
       - name: Sign and verify the published digest
-        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request'
         shell: bash
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
@@ -258,7 +258,7 @@ jobs:
           /tmp/cosign verify --key cosign.pub "${PUBLISHED_IMAGE}@${DIGEST}"
 
       - name: Publish stream and immutable tags
-        if: (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request'
         shell: bash
         env:
           DIGEST: ${{ steps.publish.outputs.digest }}
@@ -304,7 +304,7 @@ jobs:
           echo "Published immutable tag: ${PUBLISHED_IMAGE}:${immutable_tag}"
 
       - name: Log out of registry
-        if: always() && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+        if: always() && github.event_name != 'pull_request'
         shell: bash
         run: |
           if ! command -v docker >/dev/null; then
