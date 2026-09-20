@@ -10,16 +10,24 @@ readonly defaults_dir="/usr/share/bazzite-firebadnofire"
 
 install -d -m 0700 "${config_dir}"
 
-# Never replace an operator's Hyprland configuration. A legacy .conf also
+# Never replace an operator's Hyprland configuration. A legacy .lua also
 # counts as an existing choice because Hyprland supports both formats.
 if [[ ! -e "${config_dir}/hyprland.lua" && ! -e "${config_dir}/hyprland.conf" ]]; then
-    install -m 0600 "${defaults_dir}/hyprland.lua" "${config_dir}/hyprland.lua"
+    install -m 0600 "${defaults_dir}/hyprland.conf" "${config_dir}/hyprland.conf"
 fi
 
-for name in hypridle.conf hyprlock.conf; do
+for name in hypridle.conf hyprlock.conf hyprpaper.conf; do
     if [[ ! -e "${config_dir}/${name}" ]]; then
         install -m 0600 "${defaults_dir}/${name}" "${config_dir}/${name}"
     fi
 done
+
+readonly waybar_dir="${config_home}/waybar"
+install -d -m 0700 "${waybar_dir}"
+if [[ ! -e "${waybar_dir}/config.jsonc" && ! -e "${waybar_dir}/config" ]]; then
+    install -m 0600 "${defaults_dir}/waybar/config.jsonc" "${waybar_dir}/config.jsonc"
+fi
+
+install -d -m 0700 "${config_home}/wallpapers"
 
 exec /usr/bin/Hyprland

@@ -42,6 +42,7 @@ dnf5 -y install \
     hypridle \
     hyprland \
     hyprlock \
+    hyprpaper \
     hyprpolkitagent \
     xdg-desktop-portal-hyprland
 dnf5 -y copr disable "${HYPRLAND_COPR}"
@@ -100,6 +101,7 @@ install -D -m 0644 \
 cp -avf /ctx/system_files/. /
 
 chmod 0755 \
+    /usr/libexec/bazzite-firebadnofire-rotate-wallpaper \
     /usr/libexec/bazzite-firebadnofire-screenshot \
     /usr/libexec/bazzite-firebadnofire-start-hyprland
 
@@ -120,6 +122,7 @@ rpm -q \
     hyprland \
     hypridle \
     hyprlock \
+    hyprpaper \
     hyprpolkitagent \
     libvirt-daemon-kvm \
     plasma-login-manager \
@@ -130,11 +133,14 @@ rpm -q \
     /usr/share/bazzite-firebadnofire/include.txt
 test -x /usr/libexec/bazzite-firebadnofire-start-hyprland
 test -x /usr/libexec/bazzite-firebadnofire-screenshot
+test -x /usr/libexec/bazzite-firebadnofire-rotate-wallpaper
 test -x /usr/bin/looking-glass-client
 test -x /usr/libexec/xdg-desktop-portal-hyprland
 test -x /usr/libexec/hyprpolkitagent
 test -f /usr/share/wayland-sessions/hyprland.desktop
-test -f /usr/share/bazzite-firebadnofire/hyprland.lua
+test -f /usr/share/bazzite-firebadnofire/hyprland.conf
+test -f /usr/share/bazzite-firebadnofire/hyprpaper.conf
+test -f /usr/share/bazzite-firebadnofire/waybar/config.jsonc
 test -f /usr/lib/tmpfiles.d/bazzite-firebadnofire.conf
 grep -qx 'Exec=/usr/libexec/bazzite-firebadnofire-start-hyprland' \
     /usr/share/wayland-sessions/hyprland.desktop

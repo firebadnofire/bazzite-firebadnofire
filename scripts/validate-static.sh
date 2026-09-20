@@ -16,7 +16,10 @@ required_files=(
     disk_config/iso.toml
     scripts/sign-release-artifacts.sh
     system_files/usr/lib/tmpfiles.d/bazzite-firebadnofire.conf
-    system_files/usr/share/bazzite-firebadnofire/hyprland.lua
+    system_files/usr/libexec/bazzite-firebadnofire-rotate-wallpaper
+    system_files/usr/share/bazzite-firebadnofire/hyprland.conf
+    system_files/usr/share/bazzite-firebadnofire/hyprpaper.conf
+    system_files/usr/share/bazzite-firebadnofire/waybar/config.jsonc
     system_files/usr/share/wayland-sessions/hyprland.desktop
 )
 
@@ -42,6 +45,7 @@ bash -n \
     scripts/test-include-packages.sh \
     scripts/sign-release-artifacts.sh \
     scripts/validate-static.sh \
+    system_files/usr/libexec/bazzite-firebadnofire-rotate-wallpaper \
     system_files/usr/libexec/bazzite-firebadnofire-screenshot \
     system_files/usr/libexec/bazzite-firebadnofire-start-hyprland
 
@@ -60,6 +64,7 @@ shellcheck \
     scripts/test-include-packages.sh \
     scripts/sign-release-artifacts.sh \
     scripts/validate-static.sh \
+    system_files/usr/libexec/bazzite-firebadnofire-rotate-wallpaper \
     system_files/usr/libexec/bazzite-firebadnofire-screenshot \
     system_files/usr/libexec/bazzite-firebadnofire-start-hyprland
 
@@ -68,6 +73,7 @@ bash scripts/test-include-packages.sh
 
 python3 - <<'PY'
 from pathlib import Path
+import json
 import subprocess
 
 try:
@@ -86,6 +92,12 @@ except ModuleNotFoundError:
         tomllib = _TomlCompat()
 
 import yaml
+
+json.loads(
+    Path("system_files/usr/share/bazzite-firebadnofire/waybar/config.jsonc").read_text(
+        encoding="utf-8"
+    )
+)
 
 for path in sorted(Path("disk_config").glob("*.toml")):
     tomllib.loads(path.read_text(encoding="utf-8"))

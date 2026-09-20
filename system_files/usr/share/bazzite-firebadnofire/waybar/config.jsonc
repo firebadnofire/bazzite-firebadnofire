@@ -1,0 +1,89 @@
+{
+  "height": 30,
+  "spacing": 4,
+  "modules-left": [
+    "hyprland/workspaces"
+  ],
+  "modules-center": [
+    "hyprland/window"
+  ],
+  "modules-right": [
+    "custom/clipboard",
+    "wireplumber",
+    "network",
+    "power-profiles-daemon",
+    "cpu",
+    "memory",
+    "temperature",
+    "backlight",
+    "hyprland/language",
+    "battery",
+    "clock",
+    "tray"
+  ],
+  "custom/clipboard": {
+    "format": "",
+    "tooltip": false,
+    "on-click": "cliphist list | fuzzel --dmenu | cliphist decode | wl-copy"
+  },
+  "wireplumber": {
+    "format": "{volume}% {icon}",
+    "format-muted": "",
+    "format-icons": ["", "", ""],
+    "on-click": "pavucontrol"
+  },
+  "tray": {
+    "spacing": 10
+  },
+  "clock": {
+    "tooltip-format": "<big>{:%Y %B}</big>\n<tt><small>{calendar}</small></tt>",
+    "format": "{:%I:%M %p}",
+    "format-alt": "{:%Y-%m-%d}"
+  },
+  "cpu": {
+    "format": "{usage}% ",
+    "tooltip": false
+  },
+  "memory": {
+    "format": "{}% "
+  },
+  "temperature": {
+    "critical-threshold": 80,
+    "format": "{temperatureC}°C {icon}",
+    "format-icons": ["", "", ""]
+  },
+  "backlight": {
+    "format": "{percent}% {icon}",
+    "format-icons": ["🌑", "🌘", "🌗", "🌖", "🌕"]
+  },
+  "battery": {
+    "states": {
+      "warning": 30,
+      "critical": 15
+    },
+    "format": "{capacity}% {icon}",
+    "format-full": "{capacity}% {icon}",
+    "format-charging": "{capacity}% ",
+    "format-plugged": "{capacity}% ",
+    "format-alt": "{time} {icon}",
+    "format-icons": ["", "", "", "", ""]
+  },
+  "power-profiles-daemon": {
+    "format": "{icon}",
+    "tooltip-format": "Power profile: {profile}\nDriver: {driver}",
+    "format-icons": {
+      "default": "",
+      "performance": "",
+      "balanced": "",
+      "power-saver": ""
+    }
+  },
+  "network": {
+    "format-wifi": "{essid} ({signalStrength}%) ",
+    "format-ethernet": "{ipaddr}/{cidr} ",
+    "tooltip-format": "{ifname} via {gwaddr} ",
+    "format-linked": "{ifname} (No IP) ",
+    "format-disconnected": "Disconnected ⚠",
+    "format-alt": "{ifname}: {ipaddr}/{cidr}"
+  }
+}

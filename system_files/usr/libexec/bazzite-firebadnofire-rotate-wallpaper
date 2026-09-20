@@ -1,0 +1,31 @@
+#!/usr/bin/bash
+
+set -Eeuo pipefail
+
+: "${HOME:?HOME must be set before selecting a wallpaper}"
+
+readonly config_home="${XDG_CONFIG_HOME:-${HOME}/.config}"
+readonly wallpaper_dir="${config_home}/wallpapers"
+
+if [[ ! -d "${wallpaper_dir}" ]]; then
+    notify-send --app-name="Wallpaper" \
+        "No wallpapers found" \
+        "Add images to ${wallpaper_dir}"
+    exit 0
+fi
+
+mapfile -d '' wallpapers < <(
+    find "${wallpaper_dir}" -type f \
+        \( -iname '*.jpg' -o -iname '*.jpeg' -o -iname '*.png' -o -iname '*.webp' \) \
+        -print0
+)
+
+if ((${#wallpapers[@]} == 0)); then
+    notify-send --app-name="Wallpaper" \
+        "No wallpapers found" \
+        "Add JPG, PNG, or WebP images to ${wallpaper_dir}"
+    exit 0
+fi
+
+readonly wallpaper="${wallpapers[RANDOM % ${#wallpapers[@]}]}"
+hyprctl hyprpaper reload ",${wallpaper}"

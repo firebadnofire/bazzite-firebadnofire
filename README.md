@@ -22,7 +22,7 @@ installing it on a workstation.
 | Architecture | x86_64 only |
 | Base | Digest-pinned `ghcr.io/ublue-os/bazzite-nvidia-open:stable` |
 | GPU target | NVIDIA Turing and newer, including GeForce RTX; other hardware inherits the upstream Bazzite behavior |
-| Desktop | Hyprland 0.56-compatible Lua configuration with XWayland |
+| Desktop | Hyprland 0.56-compatible configuration with XWayland, adapted from the operator's workstation setup |
 | Gaming | Inherited Bazzite Steam, Gamescope, codecs, controller support, and gaming tools |
 | Audio/video | Inherited PipeWire/WirePlumber plus pavucontrol and playerctl |
 | Desktop plumbing | Waybar, Fuzzel, SwayNotificationCenter, NetworkManager and Bluetooth applets, portals, polkit agent, clipboard history, screenshots, idle locking |
@@ -59,12 +59,15 @@ desktop.
 
 The display-manager entry launches
 `/usr/libexec/bazzite-firebadnofire-start-hyprland`. On first launch it copies
-the immutable defaults into `~/.config/hypr/` only when the corresponding user
-file does not already exist. Image updates never replace user configuration.
+the immutable Hyprland, Hypridle, Hyprlock, Hyprpaper, and Waybar defaults into
+`~/.config/` only when the corresponding user file does not already exist.
+Image updates never replace user configuration. An existing `hyprland.lua` is
+also treated as an intentional user configuration and remains supported.
 
 The default session starts:
 
 - Waybar and SwayNotificationCenter;
+- Hyprpaper;
 - `nm-applet` and `blueman-applet`;
 - `hyprpolkitagent` through its user service;
 - `hypridle`/`hyprlock`;
@@ -76,19 +79,28 @@ The configuration does not use deprecated NVIDIA workarounds such as
 `WLR_NO_HARDWARE_CURSORS` and does not force a Wayland-only SDL backend, which
 would be hostile to games that still need XWayland.
 
-Useful default bindings:
+The shipped Waybar layout exposes workspaces and the active window on the left
+and center, with clipboard, audio, network, power, CPU, memory, temperature,
+backlight, language, battery, clock, and tray modules on the right. Hardware-
+specific modules disappear normally when the relevant device or service is not
+available.
+
+Useful default bindings, adapted from the operator's workstation setup:
 
 | Binding | Action |
 | --- | --- |
-| `Super+Enter` | Kitty terminal |
-| `Super+D` | Fuzzel launcher |
+| `Super+Q` | Kitty terminal |
+| `Super+R` | Fuzzel launcher |
 | `Super+E` | Dolphin file manager |
 | `Super+C` | Close the focused window |
-| `Super+F` | Toggle fullscreen |
-| `Super+Shift+V` | Toggle floating |
-| `Super+V` | Select clipboard history |
+| `Super+Z` | Toggle fullscreen |
+| `Super+V` | Toggle floating |
+| `Super+I` | Select a random wallpaper from `~/.config/wallpapers` |
 | `Super+N` | Toggle notification center |
 | `Super+L` | Lock the session |
+| `Alt+H` | Steam |
+| `Alt+G` | Vesktop Flatpak, when installed |
+| `Alt+D` | Firefox |
 | `Print` | Full-screen capture to `~/Pictures/Screenshots` and clipboard |
 | `Super+Print` | Region capture |
 | `Super+1` through `Super+0` | Select workspace 1 through 10 |
@@ -96,6 +108,10 @@ Useful default bindings:
 
 Audio, microphone, media, and brightness keys are also configured. The idle
 policy requests a lock after five minutes and powers displays off after ten.
+Wallpaper images are deliberately not embedded in the public image because the
+reference files do not have repository-ready provenance or licensing. If
+`~/.config/wallpapers` has no JPG, PNG, or WebP images, `Super+I` reports that
+condition without disrupting the session.
 
 ## Package sources and security boundary
 
@@ -122,6 +138,7 @@ only these packages:
 - `xdg-desktop-portal-hyprland`
 - `hypridle`
 - `hyprlock`
+- `hyprpaper`
 - `hyprpolkitagent`
 
 The COPR is disabled immediately afterward and is not left enabled on installed
@@ -751,17 +768,20 @@ In the VM, verify at minimum:
 ```bash
 sudo bootc status
 systemctl is-enabled libvirtd.service
-rpm -q hyprland xdg-desktop-portal-hyprland qemu-kvm virt-manager
+rpm -q hyprland hyprpaper xdg-desktop-portal-hyprland qemu-kvm virt-manager
 ```
 
 Then exercise the actual graphical path:
 
 1. Select the Hyprland session in the display manager and log in.
 2. Open Kitty, Dolphin, Fuzzel, Waybar, and the notification center.
-3. Test audio controls, locking/unlocking, clipboard history, full and region
-   screenshots, and a PipeWire screen-share portal request.
-4. Launch an XWayland application and a native Wayland application.
-5. Reboot, update, and roll back once before considering hardware installation.
+3. Add a test image to `~/.config/wallpapers`, press `Super+I`, and confirm
+   Hyprpaper changes the wallpaper. Also confirm the empty-directory
+   notification with a fresh test account.
+4. Test audio controls, locking/unlocking, the Waybar clipboard picker, full and
+   region screenshots, and a PipeWire screen-share portal request.
+5. Launch an XWayland application and a native Wayland application.
+6. Reboot, update, and roll back once before considering hardware installation.
 
 A virtual GPU does not validate NVIDIA acceleration, VRR, HDR, multi-monitor
 behavior, or gaming performance. Those remain physical-hardware tests.
