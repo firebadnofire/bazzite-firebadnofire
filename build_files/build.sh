@@ -139,6 +139,8 @@ test -x /usr/libexec/xdg-desktop-portal-hyprland
 test -x /usr/libexec/hyprpolkitagent
 test -f /usr/share/wayland-sessions/hyprland.desktop
 test -f /usr/share/bazzite-firebadnofire/hyprland.conf
+test -f /usr/share/bazzite-firebadnofire/hypridle.conf
+test -f /usr/share/bazzite-firebadnofire/hyprlock.conf
 test -f /usr/share/bazzite-firebadnofire/hyprpaper.conf
 test -f /usr/share/bazzite-firebadnofire/waybar/config.jsonc
 test -f /usr/lib/tmpfiles.d/bazzite-firebadnofire.conf

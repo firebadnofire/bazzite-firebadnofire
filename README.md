@@ -63,6 +63,9 @@ the immutable Hyprland, Hypridle, Hyprlock, Hyprpaper, and Waybar defaults into
 `~/.config/` only when the corresponding user file does not already exist.
 Image updates never replace user configuration. An existing `hyprland.lua` is
 also treated as an intentional user configuration and remains supported.
+`just inspect` validates the shipped
+`/usr/share/bazzite-firebadnofire/hyprland.conf` with Hyprland's
+`--verify-config` mode; the legacy Lua filename is not an image default.
 
 The default session starts:
 

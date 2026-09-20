@@ -17,7 +17,9 @@ required_files=(
     scripts/sign-release-artifacts.sh
     system_files/usr/lib/tmpfiles.d/bazzite-firebadnofire.conf
     system_files/usr/libexec/bazzite-firebadnofire-rotate-wallpaper
+    system_files/usr/share/bazzite-firebadnofire/hypridle.conf
     system_files/usr/share/bazzite-firebadnofire/hyprland.conf
+    system_files/usr/share/bazzite-firebadnofire/hyprlock.conf
     system_files/usr/share/bazzite-firebadnofire/hyprpaper.conf
     system_files/usr/share/bazzite-firebadnofire/waybar/config.jsonc
     system_files/usr/share/wayland-sessions/hyprland.desktop
@@ -92,6 +94,19 @@ except ModuleNotFoundError:
         tomllib = _TomlCompat()
 
 import yaml
+
+justfile = Path("Justfile").read_text(encoding="utf-8")
+hyprland_default = "/usr/share/bazzite-firebadnofire/hyprland.conf"
+obsolete_hyprland_default = hyprland_default.removesuffix(".conf") + ".lua"
+if f"--config {hyprland_default}" not in justfile:
+    raise ValueError(
+        f"Justfile: image inspection must validate the shipped default: {hyprland_default}"
+    )
+if obsolete_hyprland_default in justfile:
+    raise ValueError(
+        "Justfile: image inspection references obsolete immutable Hyprland config: "
+        f"{obsolete_hyprland_default}"
+    )
 
 json.loads(
     Path("system_files/usr/share/bazzite-firebadnofire/waybar/config.jsonc").read_text(
