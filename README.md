@@ -546,9 +546,11 @@ requires the documented full primary fingerprint, signs both payload files,
 and cryptographically verifies both signatures before continuing. A second
 gate checks the exact four-file set and verifies that every nonsignature asset
 has one corresponding nonempty `.sig` file and every `.sig` has a payload. The
-release action cannot run if either gate fails. Release notes are passed
-separately and are not downloadable assets. The existing combined disk
-workflow continues to request ASCII-armored `.asc` signatures.
+release action cannot run if either gate fails. Immediately before that action,
+the workflow logs each upload asset's exact byte count and human-readable size,
+followed by the aggregate upload size. Release notes are passed separately and
+are not downloadable assets. The existing combined disk workflow continues to
+request ASCII-armored `.asc` signatures.
 
 The permanent release/tag is
 `disk-<12-character-commit>-<12-character-digest>`. Re-running with the same

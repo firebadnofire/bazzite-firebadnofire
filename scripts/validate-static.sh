@@ -299,12 +299,26 @@ iso_complete = next(
     i for i, step in enumerate(iso_steps)
     if "unsigned release asset" in step.get("run", "")
 )
+iso_size_report = next(
+    i for i, step in enumerate(iso_steps)
+    if "Total upload size:" in step.get("run", "")
+)
 iso_publish = next(
     i for i, step in enumerate(iso_steps)
     if "forgejo-release@" in step.get("uses", "")
 )
-if not iso_sign < iso_complete < iso_publish:
-    raise ValueError("build-iso.yml: signing and exact completeness must precede publication")
+if not iso_sign < iso_complete < iso_size_report < iso_publish:
+    raise ValueError(
+        "build-iso.yml: signing, completeness, and size reporting must precede publication"
+    )
+if iso_size_report + 1 != iso_publish:
+    raise ValueError("build-iso.yml: size reporting must run immediately before publication")
+size_report_run = iso_steps[iso_size_report].get("run", "")
+for required in ("stat --format='%s'", "numfmt --to=iec-i", "Upload asset:"):
+    if required not in size_report_run:
+        raise ValueError(
+            f"build-iso.yml: upload-size report is missing required behavior: {required}"
+        )
 if iso_steps[-1].get("if") != "${{ always() }}" or \
         "disk-handoff.sh cleanup" not in iso_steps[-1].get("run", ""):
     raise ValueError("build-iso.yml: final ISO handoff cleanup must run on failures too")

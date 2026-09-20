@@ -692,6 +692,30 @@ jobs:
               cosign verify --key cosign.pub ${IMAGE_REPOSITORY}@${IMAGE_DIGEST}
           EOF
 
+      - name: Report ISO release upload sizes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          total_bytes=0
+          while IFS= read -r -d '' asset; do
+            bytes="$(stat --format='%s' -- "${asset}")"
+            [[ "${bytes}" =~ ^[1-9][0-9]*$ ]] || {
+              echo "error: upload asset has an invalid size: ${asset}: ${bytes}" >&2
+              exit 1
+            }
+            human_size="$(numfmt --to=iec-i --suffix=B "${bytes}")"
+            printf 'Upload asset: %s (%s bytes; %s)\n' \
+              "${asset}" "${bytes}" "${human_size}"
+            ((total_bytes += bytes))
+          done < <(find release -maxdepth 1 -type f -print0 | sort -z)
+          [[ "${total_bytes}" -gt 0 ]] || {
+            echo "error: no nonempty release assets are available to upload" >&2
+            exit 1
+          }
+          printf 'Total upload size: %s bytes (%s)\n' \
+            "${total_bytes}" \
+            "$(numfmt --to=iec-i --suffix=B "${total_bytes}")"
+
       - name: Publish the Forgejo ISO release
         uses: https://code.forgejo.org/actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd # v2.13.4
         with:
