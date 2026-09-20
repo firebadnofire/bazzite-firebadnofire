@@ -95,18 +95,29 @@ except ModuleNotFoundError:
 
 import yaml
 
-justfile = Path("Justfile").read_text(encoding="utf-8")
 hyprland_default = "/usr/share/bazzite-firebadnofire/hyprland.conf"
 obsolete_hyprland_default = hyprland_default.removesuffix(".conf") + ".lua"
-if f"--config {hyprland_default}" not in justfile:
-    raise ValueError(
-        f"Justfile: image inspection must validate the shipped default: {hyprland_default}"
-    )
-if obsolete_hyprland_default in justfile:
-    raise ValueError(
-        "Justfile: image inspection references obsolete immutable Hyprland config: "
-        f"{obsolete_hyprland_default}"
-    )
+contract_sources = {
+    "Justfile": Path("Justfile").read_text(encoding="utf-8"),
+    ".forgejo/workflows/build.yml": Path(".forgejo/workflows/build.yml").read_text(
+        encoding="utf-8"
+    ),
+}
+for source_name, source_text in contract_sources.items():
+    for required in (
+        f"test -s {hyprland_default}",
+        f"--config {hyprland_default}",
+    ):
+        if required not in source_text:
+            raise ValueError(
+                f"{source_name}: image inspection must validate the shipped default: "
+                f"{required}"
+            )
+    if obsolete_hyprland_default in source_text:
+        raise ValueError(
+            f"{source_name}: image inspection references obsolete immutable Hyprland "
+            f"config: {obsolete_hyprland_default}"
+        )
 
 json.loads(
     Path("system_files/usr/share/bazzite-firebadnofire/waybar/config.jsonc").read_text(
