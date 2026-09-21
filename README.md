@@ -379,6 +379,17 @@ The runner must provide:
   60 GiB free is a practical starting point; disk builds can require more);
 - `apt-get` plus root or `sudo` for small validation dependencies.
 
+The image workflow enforces that 60 GiB free-space floor on the filesystem
+backing the job and DinD before it starts the build, then requires at least 40
+GiB to remain immediately before publication. These are intentionally
+fail-closed guards: on the deployed runner the Forgejo registry, Actions logs,
+and DinD ultimately share the host filesystem, so exhausting it during a
+large, many-layer push can prevent Forgejo from recording the push error
+itself. The preflight records filesystem capacity and inodes, memory and cgroup
+events, and Docker-daemon identity. If it fails, remove only identified stale
+runner artifacts or expand storage; do not broad-prune the persistent
+bootc-image-builder cache.
+
 The disk workflow additionally runs bootc-image-builder with `--privileged`.
 The runner's Docker policy must allow privileged containers and named volumes.
 It does not require host Podman and does not bind the job workspace into the
@@ -406,6 +417,7 @@ Do not put their values in files, workflow logs, commits, or issue text.
 | --- | --- | --- |
 | `REGISTRY_TOKEN` | Sensitive Forgejo PAT with `write:package` scope, owned by `firebadnofire` and permitted to publish packages for `universalblue` | Main-branch push, daily schedule, or manual image publication |
 | `GH_KEY` | Sensitive GitHub classic PAT owned by `firebadnofire` with only `write:packages` scope | Required GHCR mirror for every non-PR image publication |
+| `GITHUB_RELEASE_TOKEN` | Sensitive fine-grained GitHub PAT limited to `firebadnofire/bazzite-firebadnofire` with repository Contents read/write permission | Required GitHub mirror of every manual network ISO release |
 | `COSIGN_PRIVATE_KEY` | Sensitive contents of the private `cosign.key` | OCI signing in production image runs |
 | `COSIGN_PASSWORD` | Sensitive password for `COSIGN_PRIVATE_KEY` | OCI signing in production image runs |
 | `GPG_KEY_B64` | Sensitive base64 encoding of the private OpenPGP key whose primary fingerprint is `7D6EF134D851C8DA0862D97494F31AF374E2EE3C` | Manual disk, offline ISO, and network ISO release signing |
@@ -437,6 +449,15 @@ using GitHub's
 This workflow does not need GitHub repository, release, workflow, or
 package-deletion permission. The token value must never appear in a workflow
 file or log.
+
+Create `GITHUB_RELEASE_TOKEN` as a separate fine-grained GitHub personal access
+token scoped only to `firebadnofire/bazzite-firebadnofire`, with repository
+**Contents: Read and write** permission and no package permission. Store it in
+Forgejo Actions secrets. Do not reuse `GH_KEY`: its package-only scope is
+deliberately insufficient to create releases. The GitHub repository must
+already contain the triggering commit; the network release mirror verifies the
+exact 40-character source revision and fails closed if source mirroring has not
+completed.
 
 The first command-line push creates a private personal GHCR package. After the
 first production attempt has pushed it, open the package settings under the
@@ -504,6 +525,21 @@ then requires all three tags to resolve to the signed digest and verifies the
 signature again. Publishing, digest resolution, signing, verification, and tag
 consistency all fail closed. Do not trust a build until its complete workflow is
 green and independent verification succeeds.
+
+Each Forgejo push and registry digest lookup is attempted at most twice through
+the repository's common retry helper. A failed attempt reports the Docker exit
+status and snapshots daemon reachability, disk blocks and inodes, host/cgroup
+memory pressure, registry DNS, and the unauthenticated `/v2/` response before
+retrying. A second failure still fails the run. Image workflow runs for the
+same ref queue rather than cancelling an in-flight canonical publication.
+
+The build deliberately retains `docker buildx build --load`: the exact built
+image must be run locally for the image-contract inspection, and that same
+inspected image is subsequently tagged for Forgejo and GHCR. To keep the
+persistent DinD daemon from retaining every workflow revision, the local tag is
+unique to the run and an `always()` cleanup removes only tags that still point
+to that run's image. It does not prune shared BuildKit or disk-image caches and
+does not remove remote registry tags.
 
 Forgejo remains the canonical publication. After its three tags and signature
 are verified, the workflow pushes the traceability tag to GHCR and requires the
@@ -637,6 +673,20 @@ Installation therefore requires working network link, DHCP, DNS, trusted CA
 time/state, and outbound HTTPS to at least one endpoint. There is no offline
 fallback in this ISO.
 
+To avoid duplicating hundreds of MiB in the live filesystem, the installer is
+English-only and carries boot-time firmware in its no-hostonly initramfs rather
+than again in the squashfs. It retains the matching kernel module tree for
+installer services that request modules after the live-root transition, and it
+includes `tmux` explicitly because weak dependencies are disabled while the
+interactive Anaconda text service requires it. Plymouth is disabled on the
+installer kernel command line so it cannot hold the deliberately text-only UI.
+The live installer loads SELinux policy in permissive mode, matching Anaconda's
+documented installer-runtime behavior. This does not disable SELinux in the
+downloaded and installed workstation image, whose own policy remains enforcing.
+The live environment also omits its own OSTree deployment repository: it is
+not an updatable installed system, and the retained bootc client initializes
+the destination from the separately downloaded workstation image.
+
 The prepare job requires the canonical `stable` endpoint and records its digest
 as release provenance. It also audits the GHCR mirror anonymously: a reachable
 but different digest fails the build, while an unavailable or access-controlled
@@ -660,13 +710,22 @@ exactly four files:
 - `SHA256SUMS`;
 - `SHA256SUMS.sig`.
 
+After Forgejo publication succeeds, the workflow creates or reconciles the
+same tag and exact four-file release at
+`github.com/firebadnofire/bazzite-firebadnofire`. GitHub reconciliation keeps
+the release in draft state while replacing its asset set, rejects any file at
+or above GitHub's 2 GiB per-file ceiling, and requires GitHub's reported size
+and SHA-256 digest for every upload to match the local signed asset before the
+release becomes public. A GitHub failure fails the workflow; Forgejo remains
+the canonical release location.
+
 The network workflow needs the same privileged isolated DinD access as other
 disk builders, plus enough temporary storage for the installer container,
 Podman graphroot, ISO, and squashfs inspection. It does not need registry or
 Cosign private keys. Only the final unprivileged release job receives the GPG
-secrets. Its Fedora bootc base and Image Builder execution image are both
-digest-pinned x86_64 inputs and must be reviewed as supply-chain changes when
-updated.
+secrets and narrowly scoped GitHub release token. Its Fedora bootc base and
+Image Builder execution image are both digest-pinned x86_64 inputs and must be
+reviewed as supply-chain changes when updated.
 
 The permanent release/tag is
 `disk-<12-character-commit>-<12-character-digest>`. Re-running with the same

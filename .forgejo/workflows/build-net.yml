@@ -200,7 +200,7 @@ jobs:
               cd /workspace
               podman build --pull=always \
                 --tag localhost/bazzite-firebadnofire-net-installer:ci \
-                --file Containerfile .
+                --file network-installer/Containerfile .
               podman image inspect localhost/bazzite-firebadnofire-net-installer:ci
               image-builder build \
                 --output-dir /output \
@@ -236,7 +236,8 @@ jobs:
           inspection="$(mktemp -d)"
           trap 'rm -rf "${inspection}"' EXIT
 
-          xorriso -indev "${iso}" -find / -type f -print > "${inspection}/iso-files"
+          xorriso -indev "${iso}" -find / -type f | \
+            sed -e "s/^'//" -e "s/'$//" > "${inspection}/iso-files"
           if grep -Eq '^/(container|ostree|payload)(/|$)' "${inspection}/iso-files"; then
             echo "error: ISO contains a top-level embedded operating-system payload" >&2
             cat "${inspection}/iso-files" >&2
@@ -248,6 +249,11 @@ jobs:
           if awk '$1 !~ /^d/ && $NF ~ /^squashfs-root\/var\/lib\/containers\/storage\// { found=1 } END { exit !found }' \
               "${inspection}/squashfs-files"; then
             echo "error: installer squashfs contains an embedded container payload" >&2
+            exit 1
+          fi
+          if grep -Eq '[[:space:]]squashfs-root/sysroot/ostree/repo(/|$)' \
+              "${inspection}/squashfs-files"; then
+            echo "error: installer squashfs contains its own OSTree repository" >&2
             exit 1
           fi
           unsquashfs -cat "${inspection}/squashfs.img" \
@@ -482,6 +488,16 @@ jobs:
           release-notes-file: release-notes.md
           override: true
           hide-archive-link: true
+
+      - name: Mirror and verify the network ISO release on GitHub
+        shell: bash
+        env:
+          GITHUB_RELEASE_TOKEN: ${{ secrets.GITHUB_RELEASE_TOKEN }}
+          GITHUB_RELEASE_REPOSITORY: firebadnofire/bazzite-firebadnofire
+          GITHUB_RELEASE_TAG: netiso-${{ steps.metadata.outputs.release_id }}
+          GITHUB_RELEASE_TITLE: bazzite-firebadnofire network ISO ${{ steps.metadata.outputs.release_id }}
+          GITHUB_RELEASE_TARGET: ${{ github.sha }}
+        run: bash scripts/publish-github-release.sh release release-notes.md
 
       - name: Clean up this run's network ISO handoff volume
         if: ${{ always() }}

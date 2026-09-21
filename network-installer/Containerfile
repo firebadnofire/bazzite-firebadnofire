@@ -2,6 +2,8 @@ FROM quay.io/fedora/fedora-bootc:44@sha256:2e1c2bbd87411f2c6d90271bf2c51bf036c9c
 
 # Keep the boot environment focused on installation. The workstation image is
 # deliberately not an input to this build and is pulled only after ISO boot.
+# The Fedora bootc base is general-purpose, so remove emulators, desktop GPU
+# firmware, fwupd, and toolbox that an x86_64 text installer cannot use.
 RUN dnf5 -y --setopt=install_weak_deps=False install \
         anaconda-core \
         anaconda-dracut \
@@ -13,7 +15,15 @@ RUN dnf5 -y --setopt=install_weak_deps=False install \
         net-tools \
         plymouth \
         squashfs-tools \
+        tmux \
         xorriso \
+    && dnf5 -y remove \
+        'qemu-user-static*' \
+        amd-gpu-firmware \
+        fwupd \
+        intel-gpu-firmware \
+        nvidia-gpu-firmware \
+        toolbox \
     && dnf5 clean all \
     && rm -rf /var/cache/dnf
 
@@ -24,6 +34,10 @@ COPY system_files/etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirr
 
 # These are the minimum container-to-installer adaptations currently required
 # by upstream Image Builder's bootc-generic-iso contract.
+# The no-hostonly initramfs carries firmware for boot-time hardware, so the live
+# squashfs does not duplicate it. Keep the module tree available after the
+# switch-root, when installer services can still request additional modules.
+# The installer is English-only.
 RUN set -Eeuo pipefail; \
     install -d -m 0755 /boot/efi /var/mnt; \
     cp -a /usr/lib/efi/*/*/EFI /boot/efi/; \
@@ -46,6 +60,17 @@ RUN set -Eeuo pipefail; \
     test -n "${kernel}"; \
     DRACUT_NO_XATTR=1 dracut --force --zstd --reproducible --no-hostonly \
         --add 'anaconda' "/usr/lib/modules/${kernel}/initramfs.img" "${kernel}"; \
+    rm -rf \
+        /usr/lib/firmware \
+        /usr/share/doc/* \
+        /usr/share/man/* \
+        /usr/share/locale/* \
+        /sysroot/ostree/repo \
+        /var/cache/* \
+        /var/log/* \
+        /var/tmp/*; \
+    find /usr/lib/locale -mindepth 1 -maxdepth 1 ! -name C.utf8 \
+        -exec rm -rf -- {} +; \
     command -v anaconda; \
     command -v bootc; \
     command -v grub2-mkimage; \
@@ -54,4 +79,6 @@ RUN set -Eeuo pipefail; \
     command -v podman; \
     command -v python; \
     command -v xorriso; \
+    bootc --help >/dev/null; \
+    test ! -e /sysroot/ostree/repo; \
     test -s /usr/share/anaconda/interactive-defaults.ks

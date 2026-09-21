@@ -15,12 +15,15 @@ required_files=(
     disk_config/ci-writable-storage.conf
     disk_config/disk.toml
     disk_config/iso.toml
+    scripts/oci-publication.sh
     scripts/retry-once.sh
+    scripts/publish-github-release.sh
     scripts/sign-release-artifacts.sh
     network-installer/Containerfile
     network-installer/interactive-defaults.ks
     network-installer/iso.yaml
     system_files/etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
+    scripts/test-oci-publication.sh
     scripts/test-retry-once.sh
     system_files/usr/lib/tmpfiles.d/bazzite-firebadnofire.conf
     system_files/usr/libexec/bazzite-firebadnofire-rotate-wallpaper
@@ -52,8 +55,11 @@ bash -n \
     build_files/include-packages.sh \
     build_files/build.sh \
     scripts/test-include-packages.sh \
+    scripts/oci-publication.sh \
     scripts/retry-once.sh \
+    scripts/publish-github-release.sh \
     scripts/sign-release-artifacts.sh \
+    scripts/test-oci-publication.sh \
     scripts/test-retry-once.sh \
     scripts/validate-static.sh \
     system_files/usr/libexec/bazzite-firebadnofire-rotate-wallpaper \
@@ -73,8 +79,11 @@ shellcheck \
     build_files/include-packages.sh \
     build_files/build.sh \
     scripts/test-include-packages.sh \
+    scripts/oci-publication.sh \
     scripts/retry-once.sh \
+    scripts/publish-github-release.sh \
     scripts/sign-release-artifacts.sh \
+    scripts/test-oci-publication.sh \
     scripts/test-retry-once.sh \
     scripts/validate-static.sh \
     system_files/usr/libexec/bazzite-firebadnofire-rotate-wallpaper \
@@ -83,6 +92,7 @@ shellcheck \
 
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-repo-keys.py
 bash scripts/test-include-packages.sh
+bash scripts/test-oci-publication.sh
 bash scripts/test-retry-once.sh
 
 python3 - <<'PY'
@@ -254,7 +264,15 @@ for required in (
     "cosign verify --key cosign.pub",
     "GHCR_REGISTRY: ghcr.io",
     "GHCR_IMAGE_PATH: firebadnofire/bazzite-firebadnofire",
+    'MIN_RUNNER_FREE_BYTES: "64424509440"',
+    'MIN_PUBLISH_FREE_BYTES: "42949672960"',
+    'report_publish_failure "publication storage preflight"',
+    'local_image="localhost/${IMAGE_NAME}:ci-${GITHUB_RUN_ID}-${run_attempt}"',
+    "source scripts/oci-publication.sh",
+    "retry_once push_reference",
+    "retry_once resolve_digest",
     "retry_once mirror_to_ghcr",
+    "Job cgroup memory events",
     'for tag in "${TRACEABILITY_TAG}" "${IMMUTABLE_TAG}" stable',
     '[[ "${tag_digest}" != "${DIGEST}" ]]',
     'DOCKER_CONFIG="${anonymous_config}" docker buildx imagetools inspect',
@@ -263,8 +281,13 @@ for required in (
         raise ValueError(f"build.yml: missing production contract: {required}")
 if "--raw | sha256sum" in image_workflow:
     raise ValueError("build.yml: registry digest must not be reconstructed by hashing raw output")
+for forbidden in ("docker system prune", "docker builder prune", "docker buildx prune"):
+    if forbidden in image_workflow:
+        raise ValueError(f"build.yml: run-local cleanup must not use broad pruning: {forbidden}")
 
 image_document = yaml.safe_load(image_workflow)
+if image_document["concurrency"].get("cancel-in-progress") is not False:
+    raise ValueError("build.yml: an in-flight canonical publication must not be cancelled")
 image_steps = {step["name"]: step for step in image_document["jobs"]["image"]["steps"]}
 publication_steps = (
     "Log in to the Forgejo registry",
@@ -281,6 +304,17 @@ if image_steps["Log out of registries"].get("if") != (
     "always() && github.event_name != 'pull_request'"
 ):
     raise ValueError("build.yml: registry logout must always run after non-PR events")
+cleanup_step = image_steps["Clean up this run's loaded image"]
+if cleanup_step.get("if") != "always()":
+    raise ValueError("build.yml: exact run-local image cleanup must always run")
+cleanup_script = cleanup_step.get("run", "")
+for required in (
+    'docker image inspect "${LOCAL_IMAGE}"',
+    '[[ "${reference_id}" != "${local_image_id}" ]]',
+    "shared caches were not pruned",
+):
+    if required not in cleanup_script:
+        raise ValueError(f"build.yml: run-local cleanup is missing: {required}")
 
 mirror_step = image_steps["Mirror signed image to GHCR"]
 mirror_environment = mirror_step.get("env", {})
@@ -303,13 +337,30 @@ image_step_order = [step["name"] for step in image_document["jobs"]["image"]["st
 if not (
     image_step_order.index("Publish stream and immutable tags")
     < image_step_order.index("Mirror signed image to GHCR")
+    < image_step_order.index("Clean up this run's loaded image")
     < image_step_order.index("Log out of registries")
 ):
-    raise ValueError("build.yml: GHCR mirroring must follow canonical publication and precede cleanup")
+    raise ValueError("build.yml: canonical publication, GHCR mirroring, cleanup, and logout are misordered")
 
 logout_script = image_steps["Log out of registries"].get("run", "")
 if 'for registry in "${IMAGE_REGISTRY}" "${GHCR_REGISTRY}"' not in logout_script:
     raise ValueError("build.yml: cleanup must log out of both OCI registries")
+
+publication_helper = Path("scripts/oci-publication.sh").read_text(encoding="utf-8")
+for required in (
+    "docker push",
+    "docker buildx imagetools inspect",
+    "docker push returned status",
+    "Docker daemon is not reachable from the job",
+    "df -hT /",
+    "df -ih /",
+    "free -h",
+    "/sys/fs/cgroup/memory.events",
+    "getent ahosts",
+    "Registry /v2/ unauthenticated HTTP status",
+):
+    if required not in publication_helper:
+        raise ValueError(f"oci-publication.sh: missing fail-closed diagnostic: {required}")
 
 disk_workflow = Path(".forgejo/workflows/build-disk.yml").read_text(encoding="utf-8")
 for required in (
@@ -500,9 +551,13 @@ for required in (
     "IMAGE_REPOSITORY: pubcode.archuser.org/universalblue/bazzite-firebadnofire",
     "IMAGE_MIRROR: ghcr.io/firebadnofire/bazzite-firebadnofire",
     "bootc-generic-iso",
+    "--file network-installer/Containerfile .",
     "HANDOFF_FORMATS: netiso",
     "bash scripts/disk-handoff.sh stage netiso",
     "Prove the ISO contains no workstation OCI payload",
+    'xorriso -indev "${iso}" -find / -type f',
+    'sed -e "s/^\x27//" -e "s/\x27$//"',
+    "installer squashfs contains its own OSTree repository",
     "/LiveOS/squashfs.img",
     "usr/share/anaconda/interactive-defaults.ks",
     "0.5 GiB",
@@ -510,6 +565,9 @@ for required in (
     "bash scripts/sign-release-artifacts.sh release sig",
     "GPG_KEY_B64: ${{ secrets.GPG_KEY_B64 }}",
     "GPG_KEY_PASSWORD: ${{ secrets.GPG_KEY_PASSWORD }}",
+    "GITHUB_RELEASE_TOKEN: ${{ secrets.GITHUB_RELEASE_TOKEN }}",
+    "GITHUB_RELEASE_REPOSITORY: firebadnofire/bazzite-firebadnofire",
+    "bash scripts/publish-github-release.sh release release-notes.md",
     "tag: netiso-${{ steps.metadata.outputs.release_id }}",
     "actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd",
 ):
@@ -539,8 +597,18 @@ net_publish = next(
     i for i, step in enumerate(net_release_steps)
     if "forgejo-release@" in step.get("uses", "")
 )
-if not net_collect < net_sign < net_publish:
+net_github_publish = next(
+    i for i, step in enumerate(net_release_steps)
+    if "publish-github-release.sh" in step.get("run", "")
+)
+if not net_collect < net_sign < net_publish < net_github_publish:
     raise ValueError("build-net.yml: handoff verification must precede signing and publication")
+github_step = net_release_steps[net_github_publish]
+if github_step.get("env", {}).get("GITHUB_RELEASE_TOKEN") != \
+        "${{ secrets.GITHUB_RELEASE_TOKEN }}":
+    raise ValueError("build-net.yml: GitHub release credentials must come from GITHUB_RELEASE_TOKEN")
+if net_workflow.count("${{ secrets.GITHUB_RELEASE_TOKEN }}") != 1:
+    raise ValueError("build-net.yml: GitHub release token must be exposed only to its mirror step")
 if net_release_steps[-1].get("if") != "${{ always() }}" or \
         "disk-handoff.sh cleanup" not in net_release_steps[-1].get("run", ""):
     raise ValueError("build-net.yml: final network ISO handoff cleanup must always run")
@@ -551,11 +619,24 @@ for required in (
     "anaconda-core",
     "anaconda-tui",
     "dracut-network",
+    "tmux",
+    "'qemu-user-static*'",
+    "/usr/lib/firmware",
+    "/usr/share/locale/*",
+    "/sysroot/ostree/repo",
+    "test ! -e /sysroot/ostree/repo",
     "network-installer/iso.yaml /usr/lib/image-builder/bootc/iso.yaml",
     "network-installer/interactive-defaults.ks /usr/share/anaconda/interactive-defaults.ks",
 ):
     if required not in installer_containerfile:
         raise ValueError(f"network installer Containerfile is missing: {required}")
+installer_iso = Path("network-installer/iso.yaml").read_text(encoding="utf-8")
+for required in (
+    "enforcing=0",
+    "rd.plymouth=0 plymouth.enable=0",
+):
+    if required not in installer_iso:
+        raise ValueError(f"network installer ISO configuration is missing: {required}")
 kickstart = Path("network-installer/interactive-defaults.ks").read_text(encoding="utf-8")
 for required in (
     "text",
@@ -582,6 +663,20 @@ for required in (
 ):
     if required not in mirror_config:
         raise ValueError(f"registry failover configuration is missing: {required}")
+
+github_release_helper = Path("scripts/publish-github-release.sh").read_text(encoding="utf-8")
+for required in (
+    "https://api.github.com",
+    "https://uploads.github.com",
+    "GITHUB_RELEASE_REPOSITORY",
+    "draft:true",
+    "draft:false",
+    "((bytes < 2147483648))",
+    "'.digest'",
+    "'.assets | length'",
+):
+    if required not in github_release_helper:
+        raise ValueError(f"publish-github-release.sh: missing fail-closed contract: {required}")
 
 signing_helper = Path("scripts/sign-release-artifacts.sh").read_text(encoding="utf-8")
 for required in (

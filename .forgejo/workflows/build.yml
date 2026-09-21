@@ -14,7 +14,7 @@ on:
 
 concurrency:
   group: image-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
   IMAGE_REGISTRY: pubcode.archuser.org
@@ -22,6 +22,8 @@ env:
   GHCR_REGISTRY: ghcr.io
   GHCR_IMAGE_PATH: firebadnofire/bazzite-firebadnofire
   DOCKER_SMOKE_IMAGE: docker.io/library/hello-world:latest@sha256:5e23090353324d887c48ad5e5c56d294eab81588df9605b07d1afe895f9cc8f8
+  MIN_RUNNER_FREE_BYTES: "64424509440"
+  MIN_PUBLISH_FREE_BYTES: "42949672960"
 
 jobs:
   image:
@@ -109,6 +111,27 @@ jobs:
           docker buildx version
           docker run --rm "${DOCKER_SMOKE_IMAGE}"
 
+          echo "Runner resource snapshot before the image build:"
+          df -hT /
+          df -ih /
+          free -h
+          if [[ -r /sys/fs/cgroup/memory.events ]]; then
+            echo "Job cgroup memory events:"
+            cat /sys/fs/cgroup/memory.events
+          fi
+          docker info --format \
+            'Docker daemon: ID={{.ID}} driver={{.Driver}} root={{.DockerRootDir}} containers={{.Containers}} images={{.Images}}'
+          available_bytes="$(df --output=avail -B1 / | tail -n 1 | tr -d '[:space:]')"
+          [[ "${available_bytes}" =~ ^[0-9]+$ ]] || {
+            echo "error: could not determine free bytes on the Docker backing filesystem" >&2
+            exit 1
+          }
+          if ((available_bytes < MIN_RUNNER_FREE_BYTES)); then
+            echo "error: the runner has ${available_bytes} free bytes; at least ${MIN_RUNNER_FREE_BYTES} are required before this large image build" >&2
+            echo "error: reclaim only identified stale runner artifacts; do not broad-prune the shared disk-image cache" >&2
+            exit 1
+          fi
+
       - name: Validate repository
         shell: bash
         run: bash scripts/validate-static.sh
@@ -120,7 +143,8 @@ jobs:
           source bazzite-firebadnofire.env
           short_sha="${GITHUB_SHA:0:12}"
           created="$(date --utc +%Y-%m-%dT%H:%M:%SZ)"
-          local_image="localhost/${IMAGE_NAME}:ci"
+          run_attempt="${GITHUB_RUN_ATTEMPT:-1}"
+          local_image="localhost/${IMAGE_NAME}:ci-${GITHUB_RUN_ID}-${run_attempt}"
 
           docker buildx build --load \
             --pull \
@@ -212,22 +236,37 @@ jobs:
         run: |
           set -Eeuo pipefail
           source bazzite-firebadnofire.env
+          source scripts/oci-publication.sh
+          source scripts/retry-once.sh
           short_sha="${GITHUB_SHA:0:12}"
           image_ref="${IMAGE_REGISTRY}/${IMAGE_PATH}"
           traceability_tag="sha-${short_sha}"
 
+          trap 'echo "error: publication shell received TERM; runner shutdown or job cancellation interrupted the Forgejo push" >&2; exit 143' TERM
+          trap 'echo "error: publication shell received INT; the Forgejo push was interrupted" >&2; exit 130' INT
+
+          available_bytes="$(df --output=avail -B1 / | tail -n 1 | tr -d '[:space:]')"
+          [[ "${available_bytes}" =~ ^[0-9]+$ ]] || {
+            echo "error: could not determine free bytes at the publication boundary" >&2
+            exit 1
+          }
+          if ((available_bytes < MIN_PUBLISH_FREE_BYTES)); then
+            echo "error: publication requires ${MIN_PUBLISH_FREE_BYTES} free bytes, but only ${available_bytes} remain after the build" >&2
+            report_publish_failure "publication storage preflight" "${image_ref}:${traceability_tag}"
+            exit 1
+          fi
+
           docker tag "${LOCAL_IMAGE}" "${image_ref}:${traceability_tag}"
-          if ! docker push "${image_ref}:${traceability_tag}"; then
+          if ! retry_once push_reference "${image_ref}:${traceability_tag}"; then
             echo "error: registry push failed for ${image_ref}:${traceability_tag}" >&2
             echo "error: verify REGISTRY_TOKEN has write:package scope and its owner may publish packages for universalblue" >&2
             exit 1
           fi
 
-          manifest_json="$(docker buildx imagetools inspect \
-            "${image_ref}:${traceability_tag}" --format '{{json .Manifest}}')"
-          digest="$(python3 -c \
-            'import json, sys; print(json.load(sys.stdin)["digest"])' \
-            <<<"${manifest_json}")"
+          if ! digest="$(retry_once resolve_digest "${image_ref}:${traceability_tag}")"; then
+            echo "error: registry could not resolve the published traceability tag" >&2
+            exit 1
+          fi
           [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
             echo "error: registry returned an invalid image digest: ${digest}" >&2
             exit 1
@@ -238,6 +277,7 @@ jobs:
             echo "image_ref=${image_ref}"
             echo "traceability_tag=${traceability_tag}"
           } >> "${GITHUB_OUTPUT}"
+          trap - TERM INT
 
       - name: Install pinned Cosign
         if: github.event_name != 'pull_request'
@@ -284,33 +324,32 @@ jobs:
         run: |
           set -Eeuo pipefail
           source bazzite-firebadnofire.env
+          source scripts/oci-publication.sh
+          source scripts/retry-once.sh
           short_sha="${GITHUB_SHA:0:12}"
           build_date="$(date --utc +%Y%m%d)"
           digest_hex="${DIGEST#sha256:}"
           immutable_tag="${DEFAULT_TAG}-${build_date}-${short_sha}-${digest_hex:0:12}"
           tags=("${immutable_tag}" "${DEFAULT_TAG}")
 
+          trap 'echo "error: publication shell received TERM; runner shutdown or job cancellation interrupted Forgejo tag publication" >&2; exit 143' TERM
+          trap 'echo "error: publication shell received INT; Forgejo tag publication was interrupted" >&2; exit 130' INT
+
           [[ "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "immutable_tag=${immutable_tag}" >> "${GITHUB_OUTPUT}"
           for tag in "${tags[@]}"; do
             docker tag "${LOCAL_IMAGE}" "${PUBLISHED_IMAGE}:${tag}"
-            if ! docker push "${PUBLISHED_IMAGE}:${tag}"; then
+            if ! retry_once push_reference "${PUBLISHED_IMAGE}:${tag}"; then
               echo "error: registry push failed for ${PUBLISHED_IMAGE}:${tag}" >&2
               exit 1
             fi
           done
 
-          resolve_digest() {
-            local reference="$1"
-            local manifest_json
-            manifest_json="$(docker buildx imagetools inspect \
-              "${reference}" --format '{{json .Manifest}}')"
-            python3 -c \
-              'import json, sys; print(json.load(sys.stdin)["digest"])' \
-              <<<"${manifest_json}"
-          }
-
           for tag in "${TRACEABILITY_TAG}" "${tags[@]}"; do
-            tag_digest="$(resolve_digest "${PUBLISHED_IMAGE}:${tag}")"
+            if ! tag_digest="$(retry_once resolve_digest "${PUBLISHED_IMAGE}:${tag}")"; then
+              echo "error: registry could not resolve ${PUBLISHED_IMAGE}:${tag}" >&2
+              exit 1
+            fi
             [[ "${tag_digest}" == "${DIGEST}" ]] || {
               echo "error: ${PUBLISHED_IMAGE}:${tag} resolves to ${tag_digest}, expected ${DIGEST}" >&2
               exit 1
@@ -318,8 +357,8 @@ jobs:
           done
 
           /tmp/cosign verify --key cosign.pub "${PUBLISHED_IMAGE}@${DIGEST}"
-          echo "immutable_tag=${immutable_tag}" >> "${GITHUB_OUTPUT}"
           echo "Published immutable tag: ${PUBLISHED_IMAGE}:${immutable_tag}"
+          trap - TERM INT
 
       - name: Mirror signed image to GHCR
         if: github.event_name != 'pull_request'
@@ -446,6 +485,57 @@ jobs:
           }
 
           retry_once mirror_to_ghcr
+
+      - name: Clean up this run's loaded image
+        if: always()
+        shell: bash
+        env:
+          IMMUTABLE_TAG: ${{ steps.publish_tags.outputs.immutable_tag }}
+        run: |
+          set -Eeuo pipefail
+          if ! command -v docker >/dev/null || [[ -z "${LOCAL_IMAGE:-}" ]]; then
+            echo "No loaded image is available for run-local cleanup"
+            exit 0
+          fi
+          if ! local_image_id="$(docker image inspect "${LOCAL_IMAGE}" --format '{{.Id}}' 2>/dev/null)"; then
+            echo "The run-local image is already absent: ${LOCAL_IMAGE}"
+            exit 0
+          fi
+
+          source bazzite-firebadnofire.env
+          short_sha="${GITHUB_SHA:0:12}"
+          traceability_tag="sha-${short_sha}"
+          forgejo_image="${IMAGE_REGISTRY}/${IMAGE_PATH}"
+          ghcr_image="${GHCR_REGISTRY}/${GHCR_IMAGE_PATH}"
+          references=(
+            "${forgejo_image}:${traceability_tag}"
+            "${ghcr_image}:${traceability_tag}"
+          )
+          if [[ -n "${IMMUTABLE_TAG:-}" ]]; then
+            references+=(
+              "${forgejo_image}:${IMMUTABLE_TAG}"
+              "${ghcr_image}:${IMMUTABLE_TAG}"
+            )
+          fi
+          references+=("${forgejo_image}:${DEFAULT_TAG}" "${ghcr_image}:stable")
+
+          for reference in "${references[@]}"; do
+            if reference_id="$(docker image inspect "${reference}" --format '{{.Id}}' 2>/dev/null)"; then
+              if [[ "${reference_id}" != "${local_image_id}" ]]; then
+                echo "Skipping local tag owned by another image: ${reference}"
+                continue
+              fi
+              if ! docker image rm "${reference}"; then
+                echo "warning: could not remove run-local tag ${reference}" >&2
+              fi
+            fi
+          done
+          if docker image inspect "${LOCAL_IMAGE}" >/dev/null 2>&1; then
+            if ! docker image rm "${LOCAL_IMAGE}"; then
+              echo "warning: could not remove run-local image ${LOCAL_IMAGE}" >&2
+            fi
+          fi
+          echo "Completed exact run-local image cleanup; shared caches were not pruned"
 
       - name: Log out of registries
         if: always() && github.event_name != 'pull_request'
