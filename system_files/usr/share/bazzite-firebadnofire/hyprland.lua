@@ -18,7 +18,7 @@ hl.monitor({
     scale = "auto",
 })
 
-local terminal = "kitty"
+local terminal = "foot"
 local fileManager = "dolphin"
 local menu = "fuzzel"
 local mainMod = "SUPER"

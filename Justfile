@@ -52,7 +52,7 @@ inspect target=("localhost/" + image_name) tag=default_tag:
       bootc container lint --fatal-warnings
       export XDG_RUNTIME_DIR=/tmp/hyprland-verify
       install -d -m 0700 "${XDG_RUNTIME_DIR}"
-      rpm -q hyprland hypridle hyprlock hyprpolkitagent \
+      rpm -q foot hyprland hyprland-guiutils hypridle hyprlock hyprpolkitagent \
         xdg-desktop-portal-hyprland libvirt-daemon-kvm qemu-kvm \
         virt-manager plasma-login-manager bootc
       /usr/libexec/bazzite-firebadnofire-include-packages verify \
@@ -63,10 +63,15 @@ inspect target=("localhost/" + image_name) tag=default_tag:
       test -x /usr/bin/looking-glass-client
       test -x /usr/libexec/xdg-desktop-portal-hyprland
       test -x /usr/libexec/hyprpolkitagent
+      test -x /usr/bin/foot
+      test -x /usr/bin/start-hyprland
+      test -x /usr/bin/hyprland-dialog
       test -x /usr/libexec/bazzite-firebadnofire-start-hyprland
       test -x /usr/libexec/bazzite-firebadnofire-screenshot
       test -f /usr/share/wayland-sessions/hyprland.desktop
       grep -qx "Exec=/usr/libexec/bazzite-firebadnofire-start-hyprland" \
+        /usr/share/wayland-sessions/hyprland.desktop
+      grep -qx "TryExec=/usr/bin/start-hyprland" \
         /usr/share/wayland-sessions/hyprland.desktop
       grep -qx "DesktopNames=Hyprland" \
         /usr/share/wayland-sessions/hyprland.desktop

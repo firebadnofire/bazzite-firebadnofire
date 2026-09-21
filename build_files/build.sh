@@ -5,7 +5,7 @@ set -Eeuo pipefail
 readonly HYPRLAND_COPR="lionheartp/Hyprland"
 
 desktop_packages=(
-    blueman brightnessctl cliphist fuzzel grim kitty network-manager-applet
+    blueman brightnessctl cliphist foot fuzzel grim network-manager-applet
     pavucontrol playerctl qt5-qtwayland qt6-qtwayland slurp
     SwayNotificationCenter waybar wl-clipboard xdg-desktop-portal-gtk
 )
@@ -41,6 +41,7 @@ dnf5 -y copr enable "${HYPRLAND_COPR}"
 dnf5 -y install \
     hypridle \
     hyprland \
+    hyprland-guiutils \
     hyprlock \
     hyprpaper \
     hyprpolkitagent \
@@ -119,7 +120,9 @@ systemctl enable libvirtd.service podman.socket
 
 # Fail the image build if the user-facing workstation contract is incomplete.
 rpm -q \
+    foot \
     hyprland \
+    hyprland-guiutils \
     hypridle \
     hyprlock \
     hyprpaper \
@@ -132,6 +135,9 @@ rpm -q \
 /usr/libexec/bazzite-firebadnofire-include-packages verify \
     /usr/share/bazzite-firebadnofire/include.txt
 test -x /usr/libexec/bazzite-firebadnofire-start-hyprland
+test -x /usr/bin/foot
+test -x /usr/bin/start-hyprland
+test -x /usr/bin/hyprland-dialog
 test -x /usr/libexec/bazzite-firebadnofire-screenshot
 test -x /usr/libexec/bazzite-firebadnofire-rotate-wallpaper
 test -x /usr/bin/looking-glass-client

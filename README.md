@@ -65,6 +65,11 @@ Image updates never replace edited user configuration. Exact, unmodified
 Hyprland defaults from earlier image revisions are upgraded to the current Lua
 default so corrected bindings reach existing installations. A user-authored
 legacy `hyprland.conf` is preserved and passed explicitly to Hyprland.
+After provisioning those defaults, the image wrapper hands the session to
+Hyprland's supported `/usr/bin/start-hyprland` launcher. Legacy configuration
+arguments are passed after its required `--` separator. The image also installs
+`hyprland-guiutils`, which supplies Hyprland's runtime dialogs and emergency
+launcher.
 `just inspect` and Forgejo's **Inspect image contract** step validate the
 shipped `/usr/share/bazzite-firebadnofire/hyprland.lua` with Hyprland's
 `--verify-config` mode.
@@ -94,7 +99,7 @@ Useful default bindings, adapted from the operator's workstation setup:
 
 | Binding | Action |
 | --- | --- |
-| `Super+Q` | Kitty terminal |
+| `Super+Q` | Foot terminal |
 | `Super+R` | Fuzzel application launcher |
 | `Super+E` | Dolphin file manager |
 | `Super+C` | Close the focused window |
@@ -140,6 +145,7 @@ the build temporarily enables the GPG-checked `lionheartp/Hyprland` COPR for
 only these packages:
 
 - `hyprland`
+- `hyprland-guiutils`
 - `xdg-desktop-portal-hyprland`
 - `hypridle`
 - `hyprlock`
@@ -775,13 +781,13 @@ In the VM, verify at minimum:
 ```bash
 sudo bootc status
 systemctl is-enabled libvirtd.service
-rpm -q hyprland hyprpaper xdg-desktop-portal-hyprland qemu-kvm virt-manager
+rpm -q foot hyprland hyprland-guiutils hyprpaper xdg-desktop-portal-hyprland qemu-kvm virt-manager
 ```
 
 Then exercise the actual graphical path:
 
 1. Select the Hyprland session in the display manager and log in.
-2. Open Kitty, Dolphin, Fuzzel, Waybar, and the notification center.
+2. Open Foot, Dolphin, Fuzzel, Waybar, and the notification center.
 3. Add a test image to `~/.config/wallpapers`, press `Super+I`, and confirm
    Hyprpaper changes the wallpaper. Also confirm the empty-directory
    notification with a fresh test account.

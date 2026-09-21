@@ -13,6 +13,7 @@ readonly legacy_config="${config_dir}/hyprland.conf"
 # These identify the exact image-managed defaults shipped before this Lua
 # configuration. Never replace a file after the operator has changed it.
 readonly old_lua_sha256="5ec8d97af63d235777bee5d57e25f9716560379f9b72894e44bda8805b113f3d"
+readonly kitty_lua_sha256="b1f3f2745e41db38865a50dced9ea91d6a80918ba5a3fceb2396c99a14a8567a"
 readonly transitional_conf_sha256="663538eaf801c9340bfcc030adfc7f58ac1f09dda89367e03959226f6aa6d660"
 
 install -d -m 0700 "${config_dir}"
@@ -20,9 +21,13 @@ install -d -m 0700 "${config_dir}"
 # Upgrade only exact, unmodified defaults from prior image revisions. The
 # transitional .conf may remain as a reference; Hyprland 0.55+ loads the new
 # Lua default. A user-authored legacy .conf is passed explicitly below.
-if [[ -f "${lua_config}" && ! -L "${lua_config}" ]] &&
-        [[ "$(sha256sum "${lua_config}" | awk '{print $1}')" == "${old_lua_sha256}" ]]; then
-    install -m 0600 "${defaults_dir}/hyprland.lua" "${lua_config}"
+if [[ -f "${lua_config}" && ! -L "${lua_config}" ]]; then
+    lua_sha256="$(sha256sum "${lua_config}" | awk '{print $1}')"
+    readonly lua_sha256
+    if [[ "${lua_sha256}" == "${old_lua_sha256}" ||
+            "${lua_sha256}" == "${kitty_lua_sha256}" ]]; then
+        install -m 0600 "${defaults_dir}/hyprland.lua" "${lua_config}"
+    fi
 elif [[ ! -e "${lua_config}" && -f "${legacy_config}" && ! -L "${legacy_config}" ]] &&
         [[ "$(sha256sum "${legacy_config}" | awk '{print $1}')" == "${transitional_conf_sha256}" ]]; then
     install -m 0600 "${defaults_dir}/hyprland.lua" "${lua_config}"
@@ -45,7 +50,7 @@ fi
 install -d -m 0700 "${config_home}/wallpapers"
 
 if [[ -e "${lua_config}" ]]; then
-    exec /usr/bin/Hyprland
+    exec /usr/bin/start-hyprland
 fi
 
-exec /usr/bin/Hyprland --config "${legacy_config}"
+exec /usr/bin/start-hyprland -- --config "${legacy_config}"

@@ -101,13 +101,15 @@ hyprland_source = Path(
     "system_files/usr/share/bazzite-firebadnofire/hyprland.lua"
 ).read_text(encoding="utf-8")
 for required in (
-    'local terminal = "kitty"',
+    'local terminal = "foot"',
     'local menu = "fuzzel"',
     'hl.bind(mainMod .. " + Q", hl.dsp.exec_cmd(terminal))',
     'hl.bind(mainMod .. " + R", hl.dsp.exec_cmd(menu))',
 ):
     if required not in hyprland_source:
         raise ValueError(f"hyprland.lua: missing workstation contract: {required}")
+if 'local terminal = "kitty"' in hyprland_source:
+    raise ValueError("hyprland.lua: Kitty must not remain the default terminal")
 
 if Path("system_files/usr/share/bazzite-firebadnofire/hyprland.conf").exists():
     raise ValueError("obsolete immutable Hyprland config is still shipped: hyprland.conf")
@@ -117,6 +119,7 @@ launcher_source = Path(
 ).read_text(encoding="utf-8")
 for managed_hash in (
     "5ec8d97af63d235777bee5d57e25f9716560379f9b72894e44bda8805b113f3d",
+    "b1f3f2745e41db38865a50dced9ea91d6a80918ba5a3fceb2396c99a14a8567a",
     "663538eaf801c9340bfcc030adfc7f58ac1f09dda89367e03959226f6aa6d660",
 ):
     if managed_hash not in launcher_source:
@@ -124,6 +127,38 @@ for managed_hash in (
             "Hyprland launcher is missing a managed-default migration fingerprint: "
             f"{managed_hash}"
         )
+for required in (
+    "exec /usr/bin/start-hyprland\n",
+    'exec /usr/bin/start-hyprland -- --config "${legacy_config}"',
+):
+    if required not in launcher_source:
+        raise ValueError(
+            "Hyprland launcher must hand off to the upstream start-hyprland wrapper: "
+            f"{required.rstrip()}"
+        )
+if "exec /usr/bin/Hyprland" in launcher_source:
+    raise ValueError("Hyprland launcher must not bypass start-hyprland")
+
+desktop_source = Path(
+    "system_files/usr/share/wayland-sessions/hyprland.desktop"
+).read_text(encoding="utf-8")
+for required in (
+    "Exec=/usr/libexec/bazzite-firebadnofire-start-hyprland",
+    "TryExec=/usr/bin/start-hyprland",
+):
+    if required not in desktop_source:
+        raise ValueError(f"Hyprland desktop entry is missing: {required}")
+
+build_source = Path("build_files/build.sh").read_text(encoding="utf-8")
+for required in (
+    "foot",
+    "hyprland-guiutils",
+    "test -x /usr/bin/foot",
+    "test -x /usr/bin/start-hyprland",
+    "test -x /usr/bin/hyprland-dialog",
+):
+    if required not in build_source:
+        raise ValueError(f"build.sh: missing Hyprland runtime contract: {required}")
 
 contract_sources = {
     "Justfile": Path("Justfile").read_text(encoding="utf-8"),
@@ -135,6 +170,12 @@ for source_name, source_text in contract_sources.items():
     for required in (
         f"test -s {hyprland_default}",
         f"--config {hyprland_default}",
+        "rpm -q foot ",
+        "hyprland-guiutils",
+        "test -x /usr/bin/foot",
+        "test -x /usr/bin/start-hyprland",
+        "test -x /usr/bin/hyprland-dialog",
+        'grep -qx "TryExec=/usr/bin/start-hyprland"',
     ):
         if required not in source_text:
             raise ValueError(
