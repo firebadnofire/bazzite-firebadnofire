@@ -58,6 +58,9 @@ inspect target=("localhost/" + image_name) tag=default_tag:
       /usr/libexec/bazzite-firebadnofire-include-packages verify \
         /usr/share/bazzite-firebadnofire/include.txt
       test -s /usr/share/bazzite-firebadnofire/hyprland.lua
+      test -s /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
+      grep -Fqx "prefix = \"pubcode.archuser.org/universalblue/bazzite-firebadnofire\"" /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
+      grep -Fqx "location = \"ghcr.io/firebadnofire/bazzite-firebadnofire\"" /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
       Hyprland --verify-config --i-am-really-stupid \
         --config /usr/share/bazzite-firebadnofire/hyprland.lua
       test -x /usr/bin/looking-glass-client

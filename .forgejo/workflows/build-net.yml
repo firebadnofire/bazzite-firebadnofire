@@ -1,0 +1,489 @@
+---
+name: Build and release network installer ISO
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: netiso-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPOSITORY: pubcode.archuser.org/universalblue/bazzite-firebadnofire
+  IMAGE_MIRROR: ghcr.io/firebadnofire/bazzite-firebadnofire
+  IMAGE_BUILDER_IMAGE: ghcr.io/osbuild/image-builder-cli:latest@sha256:99fbadf80b412fe4ee2f82f42e44dce42ebdde506b496549da17b2fdd00458da
+  BIB_IMAGE: ghcr.io/osbuild/image-builder-cli:latest@sha256:99fbadf80b412fe4ee2f82f42e44dce42ebdde506b496549da17b2fdd00458da
+  DOCKER_SMOKE_IMAGE: docker.io/library/hello-world:latest@sha256:5e23090353324d887c48ad5e5c56d294eab81588df9605b07d1afe895f9cc8f8
+
+jobs:
+  prepare:
+    name: Verify current registry streams
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    outputs:
+      image_digest: ${{ steps.image.outputs.digest }}
+      daemon_id: ${{ steps.image.outputs.daemon_id }}
+
+    steps:
+      - name: Bootstrap Docker tooling
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if command -v sudo >/dev/null; then
+            SUDO=sudo
+          elif [[ "$(id -u)" == 0 ]]; then
+            SUDO=""
+          else
+            echo "error: the bare Ubuntu job needs sudo or a root user" >&2
+            exit 1
+          fi
+          ${SUDO} apt-get update
+          ${SUDO} apt-get install -y --no-install-recommends \
+            ca-certificates docker-buildx docker.io python3
+
+      - name: Verify Docker and Image Builder access
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$(uname -m)" == x86_64 ]] || {
+            echo "error: network installer builds only support x86_64" >&2
+            exit 1
+          }
+          docker info >/dev/null
+          docker buildx version
+          docker run --rm "${DOCKER_SMOKE_IMAGE}"
+          docker run --rm --privileged "${IMAGE_BUILDER_IMAGE}" version
+
+      - name: Resolve canonical stream and audit the mirror
+        id: image
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          resolve_digest() {
+            local repository="$1"
+            local manifest_json digest
+            manifest_json="$(docker buildx imagetools inspect \
+              "${repository}:stable" --format '{{json .Manifest}}')"
+            digest="$(python3 -c \
+              'import json, sys; print(json.load(sys.stdin)["digest"])' \
+              <<<"${manifest_json}")"
+            [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+              echo "error: ${repository}:stable returned an invalid digest: ${digest}" >&2
+              exit 1
+            }
+            docker buildx imagetools inspect "${repository}@${digest}" >/dev/null
+            printf '%s\n' "${digest}"
+          }
+
+          canonical_digest="$(resolve_digest "${IMAGE_REPOSITORY}")"
+          mirror_log="$(mktemp)"
+          trap 'rm -f "${mirror_log}"' EXIT
+          if mirror_digest="$(resolve_digest "${IMAGE_MIRROR}" 2>"${mirror_log}")"; then
+            [[ "${canonical_digest}" == "${mirror_digest}" ]] || {
+              echo "error: reachable stable tags are not synchronized across the canonical registry and GHCR mirror" >&2
+              echo "error: canonical=${canonical_digest} mirror=${mirror_digest}" >&2
+              exit 1
+            }
+            echo "Verified synchronized GHCR mirror: ${mirror_digest}"
+          else
+            echo "warning: GHCR mirror could not be audited anonymously; canonical installation remains available" >&2
+            sed -n '1,20p' "${mirror_log}" >&2
+          fi
+          echo "digest=${canonical_digest}" >> "${GITHUB_OUTPUT}"
+          daemon_id="$(docker info --format '{{.ID}}')"
+          [[ -n "${daemon_id}" ]]
+          echo "daemon_id=${daemon_id}" >> "${GITHUB_OUTPUT}"
+          echo "Network installer snapshot: ${IMAGE_REPOSITORY}@${canonical_digest}"
+          echo "The ISO will resolve :stable again after boot."
+
+  netiso:
+    name: Minimal network installer ISO (x86_64)
+    needs: prepare
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    env:
+      IMAGE_DIGEST: ${{ needs.prepare.outputs.image_digest }}
+      HANDOFF_DAEMON_ID: ${{ needs.prepare.outputs.daemon_id }}
+      HANDOFF_FORMATS: netiso
+
+    steps:
+      - name: Bootstrap the bare Ubuntu runner
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if command -v sudo >/dev/null; then
+            SUDO=sudo
+          elif [[ "$(id -u)" == 0 ]]; then
+            SUDO=""
+          else
+            echo "error: the bare Ubuntu job needs sudo or a root user" >&2
+            exit 1
+          fi
+          ${SUDO} apt-get update
+          ${SUDO} apt-get install -y --no-install-recommends \
+            ca-certificates docker.io git squashfs-tools xorriso
+
+      - name: Check out the exact triggering revision
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          : "${GITHUB_WORKSPACE:?Forgejo did not provide GITHUB_WORKSPACE}"
+          : "${GITHUB_REF:?Forgejo did not provide GITHUB_REF}"
+          : "${GITHUB_SHA:?Forgejo did not provide GITHUB_SHA}"
+          repository="${GITHUB_SERVER_URL:-https://pubcode.archuser.org}/${GITHUB_REPOSITORY:-universalblue/bazzite-firebadnofire}.git"
+          cd "${GITHUB_WORKSPACE}"
+          git init
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "${repository}"
+          else
+            git remote add origin "${repository}"
+          fi
+          git fetch --no-tags --depth=1 origin "${GITHUB_REF}"
+          git checkout --detach "${GITHUB_SHA}"
+          [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]]
+
+      - name: Verify the shared privileged Docker runner
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "$(uname -m)" == x86_64 ]]
+          docker info >/dev/null
+          [[ "$(docker info --format '{{.ID}}')" == "${HANDOFF_DAEMON_ID}" ]] || {
+            echo "error: prepare and build jobs reached different Docker daemons" >&2
+            exit 1
+          }
+          docker run --rm --privileged "${IMAGE_BUILDER_IMAGE}" version
+          bash scripts/disk-handoff.sh check
+
+      - name: Build the network-only installer ISO
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          output_volume="netiso-output-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          storage_volume="netiso-storage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          container="netiso-builder-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          helper="${container}-copy"
+          cleanup() {
+            for name in "${container}" "${helper}"; do
+              if docker container inspect "${name}" >/dev/null 2>&1; then
+                docker rm -f "${name}" >/dev/null
+              fi
+            done
+            for name in "${output_volume}" "${storage_volume}"; do
+              if docker volume inspect "${name}" >/dev/null 2>&1; then
+                docker volume rm "${name}" >/dev/null
+              fi
+            done
+          }
+          trap cleanup EXIT
+
+          rm -rf build-context
+          install -d -m 0755 \
+            build-context/system_files/etc/containers/registries.conf.d
+          cp -a network-installer build-context/network-installer
+          cp -a \
+            system_files/etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf \
+            build-context/system_files/etc/containers/registries.conf.d/
+          docker volume create "${output_volume}" >/dev/null
+          docker volume create "${storage_volume}" >/dev/null
+          docker create --name "${container}" \
+            --privileged \
+            --network host \
+            --security-opt label=type:unconfined_t \
+            --volume "${output_volume}:/output" \
+            --volume "${storage_volume}:/var/lib/containers/storage" \
+            --entrypoint /usr/bin/bash \
+            "${IMAGE_BUILDER_IMAGE}" -c '
+              set -Eeuo pipefail
+              cd /workspace
+              podman build --pull=always \
+                --tag localhost/bazzite-firebadnofire-net-installer:ci \
+                --file Containerfile .
+              podman image inspect localhost/bazzite-firebadnofire-net-installer:ci
+              image-builder build \
+                --output-dir /output \
+                --bootc-ref localhost/bazzite-firebadnofire-net-installer:ci \
+                --bootc-default-fs btrfs \
+                bootc-generic-iso
+            ' >/dev/null
+          docker cp build-context/. "${container}:/workspace"
+          docker start --attach "${container}"
+
+          rm -rf output/netiso
+          mkdir -p output/netiso
+          docker create --name "${helper}" \
+            --volume "${output_volume}:/output:ro" \
+            --entrypoint /usr/bin/true "${IMAGE_BUILDER_IMAGE}" >/dev/null
+          docker cp "${helper}:/output/." output/netiso/
+          docker rm "${helper}" >/dev/null
+
+          mapfile -d '' -t isos < <(find output/netiso -type f -name '*.iso' -print0)
+          [[ "${#isos[@]}" -eq 1 ]] || {
+            echo "error: Image Builder must produce exactly one ISO" >&2
+            find output/netiso -maxdepth 3 -type f -print >&2
+            exit 1
+          }
+          printf '%s\n' "${isos[0]}" > output/netiso/iso-path
+
+      - name: Prove the ISO contains no workstation OCI payload
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          iso="$(cat output/netiso/iso-path)"
+          [[ -s "${iso}" && ! -L "${iso}" ]]
+          inspection="$(mktemp -d)"
+          trap 'rm -rf "${inspection}"' EXIT
+
+          xorriso -indev "${iso}" -find / -type f -print > "${inspection}/iso-files"
+          if grep -Eq '^/(container|ostree|payload)(/|$)' "${inspection}/iso-files"; then
+            echo "error: ISO contains a top-level embedded operating-system payload" >&2
+            cat "${inspection}/iso-files" >&2
+            exit 1
+          fi
+          xorriso -osirrox on -indev "${iso}" \
+            -extract /LiveOS/squashfs.img "${inspection}/squashfs.img"
+          unsquashfs -ll "${inspection}/squashfs.img" > "${inspection}/squashfs-files"
+          if awk '$1 !~ /^d/ && $NF ~ /^squashfs-root\/var\/lib\/containers\/storage\// { found=1 } END { exit !found }' \
+              "${inspection}/squashfs-files"; then
+            echo "error: installer squashfs contains an embedded container payload" >&2
+            exit 1
+          fi
+          unsquashfs -cat "${inspection}/squashfs.img" \
+            usr/share/anaconda/interactive-defaults.ks > "${inspection}/installer.ks"
+          grep -Fqx \
+            'bootc --source-imgref registry:pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable --target-imgref pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable' \
+            "${inspection}/installer.ks"
+          unsquashfs -cat "${inspection}/squashfs.img" \
+            etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf \
+            > "${inspection}/registries.conf"
+          grep -Fq 'location = "pubcode.archuser.org/universalblue/bazzite-firebadnofire"' \
+            "${inspection}/registries.conf"
+          grep -Fq 'location = "ghcr.io/firebadnofire/bazzite-firebadnofire"' \
+            "${inspection}/registries.conf"
+          echo "Verified network-only installer payload and canonical/mirror configuration"
+
+      - name: Report size goals and stage the ISO
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          iso="$(cat output/netiso/iso-path)"
+          bytes="$(stat --format='%s' -- "${iso}")"
+          [[ "${bytes}" =~ ^[1-9][0-9]*$ ]]
+          printf 'Network installer ISO: %s bytes (%s)\n' \
+            "${bytes}" "$(numfmt --to=iec-i --suffix=B "${bytes}")"
+          if ((bytes < 536870912)); then
+            echo "Size goal met: below 0.5 GiB"
+          elif ((bytes < 1073741824)); then
+            echo "Preferred ceiling met: below 1 GiB; 0.5 GiB stretch goal was not met"
+          else
+            echo "warning: ISO exceeds the preferred 1 GiB ceiling; inspect package contents before release" >&2
+          fi
+
+          short_sha="${GITHUB_SHA:0:12}"
+          digest_hex="${IMAGE_DIGEST#sha256:}"
+          mkdir -p release-input
+          install -m 0644 "${iso}" \
+            "release-input/bazzite-firebadnofire-${short_sha}-${digest_hex:0:12}.net.iso"
+          bash scripts/disk-handoff.sh stage netiso
+
+  release:
+    name: Sign and publish network installer release
+    needs: [prepare, netiso]
+    if: ${{ always() && needs.prepare.result == 'success' }}
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    env:
+      IMAGE_DIGEST: ${{ needs.prepare.outputs.image_digest }}
+      HANDOFF_DAEMON_ID: ${{ needs.prepare.outputs.daemon_id }}
+      HANDOFF_FORMATS: netiso
+
+    steps:
+      - name: Bootstrap release tooling
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if command -v sudo >/dev/null; then
+            SUDO=sudo
+          elif [[ "$(id -u)" == 0 ]]; then
+            SUDO=""
+          else
+            echo "error: the bare Ubuntu job needs sudo or a root user" >&2
+            exit 1
+          fi
+          ${SUDO} apt-get update
+          ${SUDO} apt-get install -y --no-install-recommends \
+            ca-certificates curl docker.io git gnupg jq xz-utils
+
+          readonly node_version=v24.17.0
+          readonly node_archive="node-${node_version}-linux-x64.tar.xz"
+          readonly node_sha256=ab343a1b747c7cbf3630dfd7dbf818c5423fab2eb4f5ad1afc896f6bd121a917
+          curl --fail --location --silent --show-error \
+            --output "/tmp/${node_archive}" \
+            "https://nodejs.org/dist/${node_version}/${node_archive}"
+          printf '%s  %s\n' "${node_sha256}" "/tmp/${node_archive}" | \
+            sha256sum --check --strict
+          ${SUDO} tar --extract --xz --file "/tmp/${node_archive}" \
+            --directory /usr/local --strip-components=1
+          node --version
+          docker info >/dev/null
+
+      - name: Check out the exact triggering revision
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          : "${GITHUB_WORKSPACE:?Forgejo did not provide GITHUB_WORKSPACE}"
+          repository="${GITHUB_SERVER_URL:-https://pubcode.archuser.org}/${GITHUB_REPOSITORY:-universalblue/bazzite-firebadnofire}.git"
+          cd "${GITHUB_WORKSPACE}"
+          git init
+          if git remote get-url origin >/dev/null 2>&1; then
+            git remote set-url origin "${repository}"
+          else
+            git remote add origin "${repository}"
+          fi
+          git fetch --no-tags --depth=1 origin "${GITHUB_REF}"
+          git checkout --detach "${GITHUB_SHA}"
+          [[ "$(git rev-parse HEAD)" == "${GITHUB_SHA}" ]]
+
+      - name: Require the network ISO build and verify local handoff
+        shell: bash
+        env:
+          NETISO_RESULT: ${{ needs.netiso.result }}
+        run: |
+          set -Eeuo pipefail
+          [[ "${NETISO_RESULT}" == success ]] || {
+            echo "error: the network ISO build must succeed before signing or publishing" >&2
+            exit 1
+          }
+          bash scripts/disk-handoff.sh collect
+
+      - name: Assemble and checksum the network ISO release
+        id: metadata
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          short_sha="${GITHUB_SHA:0:12}"
+          digest_hex="${IMAGE_DIGEST#sha256:}"
+          release_id="${short_sha}-${digest_hex:0:12}"
+          iso="bazzite-firebadnofire-${release_id}.net.iso"
+          [[ -s "release/${iso}" ]]
+          [[ "$(find release -maxdepth 1 -type f | wc -l)" -eq 1 ]] || {
+            echo "error: expected only the unsigned network ISO before checksumming" >&2
+            find release -maxdepth 1 -type f -print >&2
+            exit 1
+          }
+          (
+            cd release
+            sha256sum "${iso}" > SHA256SUMS
+            sha256sum --check --strict SHA256SUMS
+          )
+          echo "release_id=${release_id}" >> "${GITHUB_OUTPUT}"
+          echo "iso=${iso}" >> "${GITHUB_OUTPUT}"
+
+      - name: Sign and cryptographically verify every downloadable asset
+        shell: bash
+        env:
+          GPG_KEY_B64: ${{ secrets.GPG_KEY_B64 }}
+          GPG_KEY_PASSWORD: ${{ secrets.GPG_KEY_PASSWORD }}
+        run: bash scripts/sign-release-artifacts.sh release sig
+
+      - name: Prove exact signed release completeness and write release notes
+        shell: bash
+        env:
+          ISO_FILE: ${{ steps.metadata.outputs.iso }}
+        run: |
+          set -Eeuo pipefail
+          expected=("${ISO_FILE}" "${ISO_FILE}.sig" SHA256SUMS SHA256SUMS.sig)
+          for asset in "${expected[@]}"; do
+            [[ -s "release/${asset}" ]] || {
+              echo "error: required signed release asset is missing or empty: ${asset}" >&2
+              exit 1
+            }
+          done
+          mapfile -d '' -t release_files < <(
+            find release -maxdepth 1 -type f -print0 | sort -z
+          )
+          [[ "${#release_files[@]}" -eq "${#expected[@]}" ]] || {
+            echo "error: release directory contains an unexpected asset" >&2
+            find release -maxdepth 1 -type f -print >&2
+            exit 1
+          }
+          for file in "${release_files[@]}"; do
+            if [[ "${file}" == *.sig ]]; then
+              [[ -s "${file%.sig}" ]] || {
+                echo "error: signature has no payload: ${file}" >&2
+                exit 1
+              }
+            else
+              [[ -s "${file}.sig" ]] || {
+                echo "error: unsigned release asset: ${file}" >&2
+                exit 1
+              }
+            fi
+          done
+
+          cat > release-notes.md <<EOF
+          # bazzite-firebadnofire network installer ISO
+
+          ISO: ${ISO_FILE}
+          Registry snapshot at build time: ${IMAGE_REPOSITORY}@${IMAGE_DIGEST}
+          Repository revision: ${GITHUB_SHA}
+
+          This ISO contains the installer environment, not the workstation OCI
+          image. After boot it resolves and pulls the then-current stable image
+          over HTTPS. The canonical image identity is ${IMAGE_REPOSITORY}:stable;
+          ${IMAGE_MIRROR}:stable is the configured fallback endpoint.
+
+          Verify the ISO checksum and detached binary signatures:
+
+              sha256sum --check --strict SHA256SUMS
+              gpg --keyserver hkps://keys.openpgp.org --recv-keys 7D6EF134D851C8DA0862D97494F31AF374E2EE3C
+              gpg --fingerprint 7D6EF134D851C8DA0862D97494F31AF374E2EE3C
+              gpg --verify ./${ISO_FILE}.sig ./${ISO_FILE}
+              gpg --verify ./SHA256SUMS.sig ./SHA256SUMS
+
+          Required full fingerprint:
+
+              7D6E F134 D851 C8DA 0862 D974 94F3 1AF3 74E2 EE3C
+          EOF
+
+      - name: Report network ISO release upload sizes
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          total_bytes=0
+          while IFS= read -r -d '' asset; do
+            bytes="$(stat --format='%s' -- "${asset}")"
+            [[ "${bytes}" =~ ^[1-9][0-9]*$ ]] || {
+              echo "error: upload asset has an invalid size: ${asset}: ${bytes}" >&2
+              exit 1
+            }
+            printf 'Upload asset: %s (%s bytes; %s)\n' \
+              "${asset}" "${bytes}" "$(numfmt --to=iec-i --suffix=B "${bytes}")"
+            ((total_bytes += bytes))
+          done < <(find release -maxdepth 1 -type f -print0 | sort -z)
+          [[ "${total_bytes}" -gt 0 ]]
+          printf 'Total upload size: %s bytes (%s)\n' \
+            "${total_bytes}" "$(numfmt --to=iec-i --suffix=B "${total_bytes}")"
+
+      - name: Publish the Forgejo network ISO release
+        uses: https://code.forgejo.org/actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd # v2.13.4
+        with:
+          direction: upload
+          url: ${{ forgejo.server_url }}
+          repo: ${{ forgejo.repository }}
+          token: ${{ forgejo.token }}
+          tag: netiso-${{ steps.metadata.outputs.release_id }}
+          title: bazzite-firebadnofire network ISO ${{ steps.metadata.outputs.release_id }}
+          sha: ${{ github.sha }}
+          release-dir: release
+          release-notes-file: release-notes.md
+          override: true
+          hide-archive-link: true
+
+      - name: Clean up this run's network ISO handoff volume
+        if: ${{ always() }}
+        shell: bash
+        run: bash scripts/disk-handoff.sh cleanup

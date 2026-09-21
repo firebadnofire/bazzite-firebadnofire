@@ -1,0 +1,6 @@
+label: "Bazzite-FBNF-Net"
+grub2:
+  entries:
+    - name: "Install bazzite-firebadnofire (network required)"
+      linux: "/images/pxeboot/vmlinuz inst.stage2=hd:LABEL=Bazzite-FBNF-Net inst.text ip=dhcp"
+      initrd: "/images/pxeboot/initrd.img"

@@ -64,4 +64,16 @@ bash "${script}" stage iso
 bash "${script}" collect
 cmp "release-input/${prefix}.iso" "release/${prefix}.iso"
 bash "${script}" cleanup
+
+# The network installer uses a distinct handoff format and a .net.iso suffix so
+# it cannot be confused with the offline installer from the same revision.
+export GITHUB_RUN_ID="${RANDOM}${RANDOM}"
+export HANDOFF_FORMATS=netiso
+rm -rf release release-input
+mkdir release-input
+printf 'network iso fixture\n' > "release-input/${prefix}.net.iso"
+bash "${script}" stage netiso
+bash "${script}" collect
+cmp "release-input/${prefix}.net.iso" "release/${prefix}.net.iso"
+bash "${script}" cleanup
 echo 'disk handoff integration tests passed'

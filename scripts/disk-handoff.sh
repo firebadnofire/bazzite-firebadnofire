@@ -24,7 +24,8 @@ digest_hex="${IMAGE_DIGEST#sha256:}"
 read -r -a handoff_formats <<< "${HANDOFF_FORMATS:-qcow2 iso}"
 [[ "${#handoff_formats[@]}" -gt 0 ]]
 for handoff_format in "${handoff_formats[@]}"; do
-    [[ "${handoff_format}" == qcow2 || "${handoff_format}" == iso ]] || {
+    [[ "${handoff_format}" == qcow2 || "${handoff_format}" == iso || \
+        "${handoff_format}" == netiso ]] || {
         echo "error: unsupported handoff format: ${handoff_format}" >&2
         exit 2
     }
@@ -32,10 +33,15 @@ done
 
 select_volume() {
     local format="$1"
-    [[ "${format}" == qcow2 || "${format}" == iso ]]
+    local extension
+    [[ "${format}" == qcow2 || "${format}" == iso || "${format}" == netiso ]]
+    case "${format}" in
+        qcow2 | iso) extension="${format}" ;;
+        netiso) extension=net.iso ;;
+    esac
     volume="disk-handoff-${scope}-${format}"
     helper="${volume}-copy"
-    filename="bazzite-firebadnofire-${GITHUB_SHA:0:12}-${digest_hex:0:12}.${format}"
+    filename="bazzite-firebadnofire-${GITHUB_SHA:0:12}-${digest_hex:0:12}.${extension}"
 }
 
 verify_volume() {
@@ -113,5 +119,5 @@ case "${1:-}" in
             fi
         done
         ;;
-    *) echo "usage: $0 check | stage {qcow2|iso} | collect | cleanup" >&2; exit 2 ;;
+    *) echo "usage: $0 check | stage {qcow2|iso|netiso} | collect | cleanup" >&2; exit 2 ;;
 esac

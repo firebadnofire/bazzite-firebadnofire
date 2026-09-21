@@ -1,0 +1,57 @@
+FROM quay.io/fedora/fedora-bootc:44@sha256:2e1c2bbd87411f2c6d90271bf2c51bf036c9cc4605cededbc56b2a9d998d1271
+
+# Keep the boot environment focused on installation. The workstation image is
+# deliberately not an input to this build and is pulled only after ISO boot.
+RUN dnf5 -y --setopt=install_weak_deps=False install \
+        anaconda-core \
+        anaconda-dracut \
+        anaconda-tui \
+        dracut-config-generic \
+        dracut-network \
+        grub2-efi-x64-cdboot \
+        isomd5sum \
+        net-tools \
+        plymouth \
+        squashfs-tools \
+        xorriso \
+    && dnf5 clean all \
+    && rm -rf /var/cache/dnf
+
+COPY network-installer/iso.yaml /usr/lib/image-builder/bootc/iso.yaml
+COPY network-installer/interactive-defaults.ks /usr/share/anaconda/interactive-defaults.ks
+COPY system_files/etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf \
+    /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
+
+# These are the minimum container-to-installer adaptations currently required
+# by upstream Image Builder's bootc-generic-iso contract.
+RUN set -Eeuo pipefail; \
+    install -d -m 0755 /boot/efi /var/mnt; \
+    cp -a /usr/lib/efi/*/*/EFI /boot/efi/; \
+    printf '%s\n' 'install:x:0:0:root:/root:/usr/libexec/anaconda/run-anaconda' \
+        >> /etc/passwd; \
+    printf '%s\n' 'install::14438:0:99999:7:::' >> /etc/shadow; \
+    passwd -d root; \
+    mv /usr/share/anaconda/list-harddrives-stub /usr/bin/list-harddrives; \
+    mv /etc/yum.repos.d /etc/anaconda.repos.d; \
+    ln -sfn /usr/lib/systemd/system/anaconda.target /etc/systemd/system/default.target; \
+    rm -f /usr/lib/systemd/system-generators/systemd-gpt-auto-generator; \
+    ln -sfn /usr/lib/systemd/system/anaconda-shell@.service \
+        /usr/lib/systemd/system/autovt@.service; \
+    install -d -m 0755 /usr/lib/systemd/logind.conf.d; \
+    printf '%s\n' '[Login]' 'ReserveVT=2' \
+        > /usr/lib/systemd/logind.conf.d/anaconda-shell.conf; \
+    mkdir -p "$(realpath /root)"; \
+    kernel="$(kernel-install list --json pretty | \
+        jq -r '.[] | select(.has_kernel == true) | .version')"; \
+    test -n "${kernel}"; \
+    DRACUT_NO_XATTR=1 dracut --force --zstd --reproducible --no-hostonly \
+        --add 'anaconda' "/usr/lib/modules/${kernel}/initramfs.img" "${kernel}"; \
+    command -v anaconda; \
+    command -v bootc; \
+    command -v grub2-mkimage; \
+    command -v implantisomd5; \
+    command -v mksquashfs; \
+    command -v podman; \
+    command -v python; \
+    command -v xorriso; \
+    test -s /usr/share/anaconda/interactive-defaults.ks

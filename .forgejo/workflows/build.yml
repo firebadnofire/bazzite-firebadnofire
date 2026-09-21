@@ -19,6 +19,8 @@ concurrency:
 env:
   IMAGE_REGISTRY: pubcode.archuser.org
   IMAGE_PATH: universalblue/bazzite-firebadnofire
+  GHCR_REGISTRY: ghcr.io
+  GHCR_IMAGE_PATH: firebadnofire/bazzite-firebadnofire
   DOCKER_SMOKE_IMAGE: docker.io/library/hello-world:latest@sha256:5e23090353324d887c48ad5e5c56d294eab81588df9605b07d1afe895f9cc8f8
 
 jobs:
@@ -152,6 +154,9 @@ jobs:
             /usr/libexec/bazzite-firebadnofire-include-packages verify \
               /usr/share/bazzite-firebadnofire/include.txt
             test -s /usr/share/bazzite-firebadnofire/hyprland.lua
+            test -s /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
+            grep -Fqx "prefix = \"pubcode.archuser.org/universalblue/bazzite-firebadnofire\"" /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
+            grep -Fqx "location = \"ghcr.io/firebadnofire/bazzite-firebadnofire\"" /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
             Hyprland --verify-config --i-am-really-stupid \
               --config /usr/share/bazzite-firebadnofire/hyprland.lua
             test -x /usr/bin/looking-glass-client
@@ -269,6 +274,7 @@ jobs:
           /tmp/cosign verify --key cosign.pub "${PUBLISHED_IMAGE}@${DIGEST}"
 
       - name: Publish stream and immutable tags
+        id: publish_tags
         if: github.event_name != 'pull_request'
         shell: bash
         env:
@@ -312,14 +318,145 @@ jobs:
           done
 
           /tmp/cosign verify --key cosign.pub "${PUBLISHED_IMAGE}@${DIGEST}"
+          echo "immutable_tag=${immutable_tag}" >> "${GITHUB_OUTPUT}"
           echo "Published immutable tag: ${PUBLISHED_IMAGE}:${immutable_tag}"
 
-      - name: Log out of registry
+      - name: Mirror signed image to GHCR
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          DIGEST: ${{ steps.publish.outputs.digest }}
+          GH_KEY: ${{ secrets.GH_KEY }}
+          GH_USERNAME: firebadnofire
+          IMMUTABLE_TAG: ${{ steps.publish_tags.outputs.immutable_tag }}
+          TRACEABILITY_TAG: ${{ steps.publish.outputs.traceability_tag }}
+        run: |
+          set -Eeuo pipefail
+          source scripts/retry-once.sh
+
+          : "${GH_KEY:?configure the GH_KEY repository secret with write:packages scope}"
+          : "${GH_USERNAME:?GH_USERNAME is not configured}"
+          : "${IMMUTABLE_TAG:?the Forgejo immutable tag output is missing}"
+          : "${TRACEABILITY_TAG:?the Forgejo traceability tag output is missing}"
+          : "${COSIGN_PRIVATE_KEY:?configure the COSIGN_PRIVATE_KEY repository secret}"
+          : "${COSIGN_PASSWORD:?configure the COSIGN_PASSWORD repository secret}"
+          [[ "${DIGEST}" =~ ^sha256:[0-9a-f]{64}$ ]]
+
+          ghcr_image="${GHCR_REGISTRY}/${GHCR_IMAGE_PATH}"
+          readonly ghcr_image
+
+          resolve_digest() {
+            local reference="$1"
+            local manifest_json
+            if ! manifest_json="$(docker buildx imagetools inspect \
+              "${reference}" --format '{{json .Manifest}}')"; then
+              echo "error: GHCR could not resolve ${reference}" >&2
+              return 1
+            fi
+            python3 -c \
+              'import json, sys; print(json.load(sys.stdin)["digest"])' \
+              <<<"${manifest_json}"
+          }
+
+          mirror_to_ghcr() {
+            local anonymous_config
+            local tag
+            local tag_digest
+
+            if ! printf '%s' "${GH_KEY}" | docker login "${GHCR_REGISTRY}" \
+              --username "${GH_USERNAME}" --password-stdin; then
+              echo "error: GHCR login failed; GH_KEY must be a classic PAT with write:packages scope" >&2
+              return 1
+            fi
+
+            if ! docker tag "${LOCAL_IMAGE}" "${ghcr_image}:${TRACEABILITY_TAG}"; then
+              echo "error: could not tag the local image for GHCR" >&2
+              return 1
+            fi
+            if ! docker push "${ghcr_image}:${TRACEABILITY_TAG}"; then
+              echo "error: GHCR traceability-tag push failed" >&2
+              return 1
+            fi
+
+            if ! tag_digest="$(resolve_digest "${ghcr_image}:${TRACEABILITY_TAG}")"; then
+              return 1
+            fi
+            if [[ "${tag_digest}" != "${DIGEST}" ]]; then
+              echo "error: GHCR digest ${tag_digest} does not match Forgejo digest ${DIGEST}" >&2
+              return 1
+            fi
+
+            if /tmp/cosign verify --key cosign.pub \
+              "${ghcr_image}@${DIGEST}" >/dev/null 2>&1; then
+              echo "GHCR digest already has a valid Cosign signature; skipping duplicate signing"
+            elif ! /tmp/cosign sign --yes \
+              --new-bundle-format=false \
+              --use-signing-config=false \
+              --key env://COSIGN_PRIVATE_KEY \
+              "${ghcr_image}@${DIGEST}"; then
+              echo "error: signing the GHCR digest failed" >&2
+              return 1
+            fi
+            if ! /tmp/cosign verify --key cosign.pub "${ghcr_image}@${DIGEST}"; then
+              echo "error: GHCR Cosign verification failed" >&2
+              return 1
+            fi
+
+            for tag in "${IMMUTABLE_TAG}" stable; do
+              if ! docker tag "${LOCAL_IMAGE}" "${ghcr_image}:${tag}"; then
+                echo "error: could not tag the local image as ${ghcr_image}:${tag}" >&2
+                return 1
+              fi
+              if ! docker push "${ghcr_image}:${tag}"; then
+                echo "error: GHCR push failed for ${ghcr_image}:${tag}" >&2
+                return 1
+              fi
+            done
+
+            for tag in "${TRACEABILITY_TAG}" "${IMMUTABLE_TAG}" stable; do
+              if ! tag_digest="$(resolve_digest "${ghcr_image}:${tag}")"; then
+                return 1
+              fi
+              if [[ "${tag_digest}" != "${DIGEST}" ]]; then
+                echo "error: ${ghcr_image}:${tag} resolves to ${tag_digest}, expected ${DIGEST}" >&2
+                return 1
+              fi
+            done
+
+            if ! anonymous_config="$(mktemp -d)"; then
+              echo "error: could not create an isolated Docker configuration for the public GHCR check" >&2
+              return 1
+            fi
+            if ! DOCKER_CONFIG="${anonymous_config}" docker buildx imagetools inspect \
+              "${ghcr_image}@${DIGEST}" >/dev/null; then
+              rm -rf -- "${anonymous_config}"
+              echo "error: anonymous GHCR inspection failed" >&2
+              echo "error: make the package public in GitHub package settings, link it to firebadnofire/bazzite-firebadnofire, and rerun" >&2
+              return 1
+            fi
+            rm -rf -- "${anonymous_config}"
+
+            if ! /tmp/cosign verify --key cosign.pub "${ghcr_image}@${DIGEST}"; then
+              echo "error: final GHCR Cosign verification failed" >&2
+              return 1
+            fi
+            echo "Mirrored and verified public GHCR image: ${ghcr_image}@${DIGEST}"
+          }
+
+          retry_once mirror_to_ghcr
+
+      - name: Log out of registries
         if: always() && github.event_name != 'pull_request'
         shell: bash
         run: |
           if ! command -v docker >/dev/null; then
-            echo "warning: Docker was unavailable, so there is no registry session to close" >&2
-          elif ! docker logout "${IMAGE_REGISTRY}"; then
-            echo "warning: registry logout failed after the job completed" >&2
+            echo "warning: Docker was unavailable, so there are no registry sessions to close" >&2
+            exit 0
           fi
+          for registry in "${IMAGE_REGISTRY}" "${GHCR_REGISTRY}"; do
+            if ! docker logout "${registry}"; then
+              echo "warning: logout failed for ${registry} after the job completed" >&2
+            fi
+          done

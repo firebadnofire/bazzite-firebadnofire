@@ -164,6 +164,13 @@ test -f /usr/share/bazzite-firebadnofire/hyprlock.conf
 test -f /usr/share/bazzite-firebadnofire/hyprpaper.conf
 test -f /usr/share/bazzite-firebadnofire/waybar/config.jsonc
 test -f /usr/lib/tmpfiles.d/bazzite-firebadnofire.conf
+test -f /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
+grep -Fqx 'prefix = "pubcode.archuser.org/universalblue/bazzite-firebadnofire"' \
+    /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
+grep -Fqx 'location = "ghcr.io/firebadnofire/bazzite-firebadnofire"' \
+    /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
+grep -Fqx 'location = "pubcode.archuser.org/universalblue/bazzite-firebadnofire"' \
+    /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
 grep -qx 'Exec=/usr/libexec/bazzite-firebadnofire-start-hyprland' \
     /usr/share/wayland-sessions/hyprland.desktop
 grep -qx 'DesktopNames=Hyprland' \

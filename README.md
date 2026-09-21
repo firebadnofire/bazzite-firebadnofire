@@ -11,6 +11,16 @@ The published image identity is:
 pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable
 ```
 
+The synchronized transport mirror is
+`ghcr.io/firebadnofire/bazzite-firebadnofire:stable`. The canonical `pubcode`
+name remains the image and update identity. A repository-scoped
+`containers-registries.conf` entry tries the canonical endpoint first and GHCR
+second for pulls of that identity; TLS certificate validation remains enabled
+for both. Because containers/image normally tries entries named `mirror`
+before `location`, the file intentionally places `pubcode` in the mirror slot
+and GHCR in the location slot to obtain that network order without changing the
+logical image reference.
+
 This is a personal image, not an official Bazzite or Universal Blue edition.
 Read the [risk and validation status](#validation-status-and-known-risks) before
 installing it on a workstation.
@@ -31,8 +41,8 @@ installing it on a workstation.
 | Development | Podman/toolbox support from Bazzite plus GitHub CLI, Git LFS, GCC/C++, CMake, Meson, Ninja, pkg-config, and Python pip |
 | Virtualization | QEMU/KVM, libvirt, virt-manager, virt-install, virt-viewer, swtpm, SPICE, libguestfs, and the Looking Glass B7 client |
 | CI | Forgejo Actions on the global `ubuntu-22.04` runner label |
-| Publication | Forgejo container registry on `pubcode.archuser.org` |
-| Signing | Key-based Cosign signature over the immutable OCI digest; detached OpenPGP signatures for downloadable disk artifacts |
+| Publication | Canonical Forgejo image on `pubcode.archuser.org` with a required GHCR mirror at `ghcr.io/firebadnofire/bazzite-firebadnofire` |
+| Signing | Separate key-based Cosign signatures over each registry-qualified OCI digest; detached OpenPGP signatures for downloadable disk artifacts |
 
 The upstream image is KDE-derived. KDE libraries and useful applications such
 as Dolphin remain installed because Bazzite does not publish a desktop-neutral
@@ -237,7 +247,7 @@ Treat both digest changes as supply-chain updates:
 
 ### Runner prerequisites
 
-Both workflows select the existing global `ubuntu-22.04` label, currently
+All Forgejo workflows select the existing global `ubuntu-22.04` label, currently
 served by the `opensuse-server` runner. The image workflow fails early unless
 the job is x86_64 and can reach a working Docker daemon and Docker Buildx.
 
@@ -395,10 +405,11 @@ Do not put their values in files, workflow logs, commits, or issue text.
 | Secret | Purpose | Required for |
 | --- | --- | --- |
 | `REGISTRY_TOKEN` | Sensitive Forgejo PAT with `write:package` scope, owned by `firebadnofire` and permitted to publish packages for `universalblue` | Main-branch push, daily schedule, or manual image publication |
+| `GH_KEY` | Sensitive GitHub classic PAT owned by `firebadnofire` with only `write:packages` scope | Required GHCR mirror for every non-PR image publication |
 | `COSIGN_PRIVATE_KEY` | Sensitive contents of the private `cosign.key` | OCI signing in production image runs |
 | `COSIGN_PASSWORD` | Sensitive password for `COSIGN_PRIVATE_KEY` | OCI signing in production image runs |
-| `GPG_KEY_B64` | Sensitive base64 encoding of the private OpenPGP key whose primary fingerprint is `7D6EF134D851C8DA0862D97494F31AF374E2EE3C` | Manual disk release signing |
-| `GPG_KEY_PASSWORD` | Sensitive passphrase for the OpenPGP private key | Manual disk release signing |
+| `GPG_KEY_B64` | Sensitive base64 encoding of the private OpenPGP key whose primary fingerprint is `7D6EF134D851C8DA0862D97494F31AF374E2EE3C` | Manual disk, offline ISO, and network ISO release signing |
+| `GPG_KEY_PASSWORD` | Sensitive passphrase for the OpenPGP private key | Manual disk, offline ISO, and network ISO release signing |
 
 The deployed Forgejo instance reports version 14.0.5. Forgejo
 [automatically creates a unique workflow token](https://forgejo.org/docs/v14.0/user/actions/basic-concepts/#automatic-token)
@@ -416,6 +427,25 @@ Create the PAT from the publishing account's Forgejo user settings with only
 team allowed to publish packages for `universalblue`. A successful Docker login
 only proves token authentication; the workflow reports a separate actionable
 error if the subsequent push lacks organization package permission.
+
+Create `GH_KEY` as a GitHub personal access token (classic) with only
+`write:packages`, then store it in the same Forgejo Actions secret settings.
+GitHub Packages does not accept a fine-grained PAT for external GHCR
+publication. Avoid the token-creation UI's automatic broad `repo` selection by
+using GitHub's
+[`write:packages`-only token URL](https://github.com/settings/tokens/new?scopes=write:packages).
+This workflow does not need GitHub repository, release, workflow, or
+package-deletion permission. The token value must never appear in a workflow
+file or log.
+
+The first command-line push creates a private personal GHCR package. After the
+first production attempt has pushed it, open the package settings under the
+`firebadnofire` GitHub account, link it to
+`firebadnofire/bazzite-firebadnofire`, and change its visibility to **Public**.
+Changing a GHCR package to public is irreversible. Rerun the Forgejo workflow
+after that one-time operation. The workflow checks the digest with an isolated,
+credential-free Docker configuration and remains failed until anonymous access
+works; an authenticated inspection is not accepted as proof of public access.
 
 `cosign.pub` is public verification material and is intentionally committed.
 `cosign.key` is intentionally ignored. This repository never reads it during
@@ -452,11 +482,13 @@ Markdown-only pushes to `main` are ignored, but the independent daily schedule
 still runs. Start a manual build from **Actions → Validate, build, publish, and
 sign → Run workflow**, selecting the ref to publish. Before a push, schedule,
 or manual production run, configure `REGISTRY_TOKEN`,
-`COSIGN_PRIVATE_KEY`, and `COSIGN_PASSWORD`. For a non-publishing build
+`GH_KEY`, `COSIGN_PRIVATE_KEY`, and `COSIGN_PASSWORD`. For a non-publishing build
 verification, open or update a pull request targeting `main`; pull-request runs
 build and inspect the image but do not receive or use publication secrets.
 
-A successful production run publishes these tags:
+A successful production run publishes these tags to both
+`pubcode.archuser.org/universalblue/bazzite-firebadnofire` and
+`ghcr.io/firebadnofire/bazzite-firebadnofire`:
 
 - `stable` — mutable stream tag;
 - `sha-<12-character-commit>` — commit traceability tag; a scheduled rebuild of
@@ -473,12 +505,27 @@ signature again. Publishing, digest resolution, signing, verification, and tag
 consistency all fail closed. Do not trust a build until its complete workflow is
 green and independent verification succeeds.
 
+Forgejo remains the canonical publication. After its three tags and signature
+are verified, the workflow pushes the traceability tag to GHCR and requires the
+GHCR registry-reported digest to equal the canonical Forgejo digest. It signs
+and verifies the GHCR-qualified digest separately before pushing the immutable
+and `stable` tags, then requires all three GHCR tags to resolve to that digest.
+An already-valid GHCR signature is reused on a rerun instead of creating a
+duplicate. The complete GHCR operation is attempted at most twice. If both
+attempts fail, the run fails with the already-published Forgejo image left
+intact; cross-registry publication cannot be atomic, and a rerun safely
+reconciles GHCR.
+
 Verify a published digest locally:
 
 ```bash
 cosign verify \
   --key cosign.pub \
   pubcode.archuser.org/universalblue/bazzite-firebadnofire@sha256:<digest>
+
+cosign verify \
+  --key cosign.pub \
+  ghcr.io/firebadnofire/bazzite-firebadnofire@sha256:<digest>
 ```
 
 Resolve the current `stable` digest before installation with Skopeo:
@@ -486,6 +533,10 @@ Resolve the current `stable` digest before installation with Skopeo:
 ```bash
 skopeo inspect \
   docker://pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable \
+  --format '{{.Digest}}'
+
+skopeo inspect \
+  docker://ghcr.io/firebadnofire/bazzite-firebadnofire:stable \
   --format '{{.Digest}}'
 ```
 
@@ -563,6 +614,59 @@ the workflow logs each upload asset's exact byte count and human-readable size,
 followed by the aggregate upload size. Release notes are passed separately and
 are not downloadable assets. The existing combined disk workflow continues to
 request ASCII-armored `.asc` signatures.
+
+For the smallest network-dependent installer, manually dispatch
+**Actions → Build and release network installer ISO → Run workflow**. The
+`.forgejo/workflows/build-net.yml` workflow builds a purpose-specific Fedora
+44 bootc/Anaconda environment from `network-installer/Containerfile` with the
+current unified Image Builder `bootc-generic-iso` path. It does **not** pass a
+workstation payload to Image Builder and does not embed the
+`bazzite-firebadnofire` OCI image. The build extracts and inspects the finished
+ISO and its installer squashfs, fails if it finds a top-level payload or any
+regular container-storage payload files, and verifies the exact network
+Kickstart and mirror configuration before release.
+
+The installer is text-mode and interactive so booting the media does not
+silently select or erase a disk. It activates DHCP, then Anaconda resolves and
+pulls the then-current
+`pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable` only after
+boot. The repository-scoped containers/image configuration tries `pubcode`
+first and the synchronized
+`ghcr.io/firebadnofire/bazzite-firebadnofire:stable` endpoint second.
+Installation therefore requires working network link, DHCP, DNS, trusted CA
+time/state, and outbound HTTPS to at least one endpoint. There is no offline
+fallback in this ISO.
+
+The prepare job requires the canonical `stable` endpoint and records its digest
+as release provenance. It also audits the GHCR mirror anonymously: a reachable
+but different digest fails the build, while an unavailable or access-controlled
+mirror produces an explicit warning and leaves canonical-only installation
+available. This is a snapshot, not a pin for installation: a later boot
+intentionally resolves `stable` again to satisfy the latest-image contract.
+Consequently the signed ISO authenticates the installer bits but does not freeze
+the OS payload selected later. Verify the current OCI digest and its Cosign
+signature before installing when a fixed, auditable payload is required.
+
+The workflow reports the finished ISO byte count and classifies it against a
+0.5 GiB stretch goal and 1 GiB preferred ceiling. These are reported goals, not
+fabricated guarantees: the first hosted build establishes the actual size of
+the pinned Fedora 44/Anaconda inputs. A result above 1 GiB emits a warning and
+must be reviewed before trusting or advertising it. The release namespace is
+`netiso-<12-character-commit>-<12-character-build-time-digest>` and contains
+exactly four files:
+
+- `bazzite-firebadnofire-<release-id>.net.iso`;
+- the matching `.net.iso.sig`;
+- `SHA256SUMS`;
+- `SHA256SUMS.sig`.
+
+The network workflow needs the same privileged isolated DinD access as other
+disk builders, plus enough temporary storage for the installer container,
+Podman graphroot, ISO, and squashfs inspection. It does not need registry or
+Cosign private keys. Only the final unprivileged release job receives the GPG
+secrets. Its Fedora bootc base and Image Builder execution image are both
+digest-pinned x86_64 inputs and must be reviewed as supply-chain changes when
+updated.
 
 The permanent release/tag is
 `disk-<12-character-commit>-<12-character-digest>`. Re-running with the same
@@ -850,6 +954,16 @@ sudo bootc upgrade
 sudo bootc status
 ```
 
+The shipped repository-scoped registry configuration preserves
+`pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable` as the origin
+shown by bootc. Pulls try that canonical endpoint first, then transparently
+rewrite the same repository/tag or digest to
+`ghcr.io/firebadnofire/bazzite-firebadnofire` if needed. Keep the two `stable`
+tags synchronized; the network-installer workflow fails before building when
+both are reachable and their resolved digests differ, and warns when GHCR cannot
+be audited anonymously. The fallback does not disable TLS,
+accept a different repository name, or broaden mirroring to unrelated images.
+
 Reboot only after reviewing the staged deployment. A digest-pinned deployment
 does not follow `stable`; explicitly switch to a newly verified digest when you
 choose to update.
@@ -904,8 +1018,10 @@ Use this vocabulary when reporting results:
 - **built**: the OCI image completed, including `bootc container lint`;
 - **inspected**: required packages, files, and service enablement were checked
   inside the built image;
-- **published**: the registry accepted the tags and they resolve to one digest;
-- **signature-verified**: Cosign verified that exact registry digest;
+- **published**: both registries accepted all three tags and they resolve to the
+  same digest, including an anonymous GHCR resolution;
+- **signature-verified**: Cosign independently verified both fully qualified
+  registry digest references;
 - **booted**: a QCOW2 or installer result completed a VM boot;
 - **hardware-tested**: the physical NVIDIA workstation completed the test plan.
 
@@ -919,8 +1035,8 @@ Important remaining risks until independently validated:
 - real Plasma Login Manager login and Hyprland session startup;
 - NVIDIA suspend/resume, display, VRR/HDR, and multi-monitor behavior;
 - Steam, Gamescope, screen sharing, and XWayland behavior under Hyprland;
-- Forgejo runner disk capacity, DinD privilege, registry permissions, and
-  package visibility;
+- Forgejo runner disk capacity, DinD privilege, both registries' permissions,
+  and GHCR package visibility;
 - bootc-image-builder QCOW2/ISO output and installer boot;
 - host-specific libvirt/VFIO and Looking Glass integration.
 

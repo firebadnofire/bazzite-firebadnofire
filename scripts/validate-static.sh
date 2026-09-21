@@ -8,13 +8,20 @@ cd "${root}"
 
 required_files=(
     .forgejo/workflows/build-iso.yml
+    .forgejo/workflows/build-net.yml
     bazzite-firebadnofire.env
     cosign.pub
     disk_config/ci-storage.conf
     disk_config/ci-writable-storage.conf
     disk_config/disk.toml
     disk_config/iso.toml
+    scripts/retry-once.sh
     scripts/sign-release-artifacts.sh
+    network-installer/Containerfile
+    network-installer/interactive-defaults.ks
+    network-installer/iso.yaml
+    system_files/etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
+    scripts/test-retry-once.sh
     system_files/usr/lib/tmpfiles.d/bazzite-firebadnofire.conf
     system_files/usr/libexec/bazzite-firebadnofire-rotate-wallpaper
     system_files/usr/share/bazzite-firebadnofire/hypridle.conf
@@ -45,7 +52,9 @@ bash -n \
     build_files/include-packages.sh \
     build_files/build.sh \
     scripts/test-include-packages.sh \
+    scripts/retry-once.sh \
     scripts/sign-release-artifacts.sh \
+    scripts/test-retry-once.sh \
     scripts/validate-static.sh \
     system_files/usr/libexec/bazzite-firebadnofire-rotate-wallpaper \
     system_files/usr/libexec/bazzite-firebadnofire-screenshot \
@@ -64,7 +73,9 @@ shellcheck \
     build_files/include-packages.sh \
     build_files/build.sh \
     scripts/test-include-packages.sh \
+    scripts/retry-once.sh \
     scripts/sign-release-artifacts.sh \
+    scripts/test-retry-once.sh \
     scripts/validate-static.sh \
     system_files/usr/libexec/bazzite-firebadnofire-rotate-wallpaper \
     system_files/usr/libexec/bazzite-firebadnofire-screenshot \
@@ -72,6 +83,7 @@ shellcheck \
 
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-repo-keys.py
 bash scripts/test-include-packages.sh
+bash scripts/test-retry-once.sh
 
 python3 - <<'PY'
 from pathlib import Path
@@ -185,6 +197,9 @@ for source_name, source_text in contract_sources.items():
         'grep -Fqx "ID=bazzite" /etc/os-release',
         'grep -Fqx "ID_LIKE=\\"fedora\\"" /etc/os-release',
         'grep -qx "TryExec=/usr/bin/start-hyprland"',
+        "test -s /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf",
+        "pubcode.archuser.org/universalblue/bazzite-firebadnofire",
+        "ghcr.io/firebadnofire/bazzite-firebadnofire",
     ):
         if required not in source_text:
             raise ValueError(
@@ -237,6 +252,12 @@ for required in (
     'cron: "17 4 * * *"',
     "--format '{{json .Manifest}}'",
     "cosign verify --key cosign.pub",
+    "GHCR_REGISTRY: ghcr.io",
+    "GHCR_IMAGE_PATH: firebadnofire/bazzite-firebadnofire",
+    "retry_once mirror_to_ghcr",
+    'for tag in "${TRACEABILITY_TAG}" "${IMMUTABLE_TAG}" stable',
+    '[[ "${tag_digest}" != "${DIGEST}" ]]',
+    'DOCKER_CONFIG="${anonymous_config}" docker buildx imagetools inspect',
 ):
     if required not in image_workflow:
         raise ValueError(f"build.yml: missing production contract: {required}")
@@ -251,14 +272,44 @@ publication_steps = (
     "Install pinned Cosign",
     "Sign and verify the published digest",
     "Publish stream and immutable tags",
+    "Mirror signed image to GHCR",
 )
 for step_name in publication_steps:
     if image_steps[step_name].get("if") != "github.event_name != 'pull_request'":
         raise ValueError(f"build.yml: {step_name} must publish for every non-PR event")
-if image_steps["Log out of registry"].get("if") != (
+if image_steps["Log out of registries"].get("if") != (
     "always() && github.event_name != 'pull_request'"
 ):
     raise ValueError("build.yml: registry logout must always run after non-PR events")
+
+mirror_step = image_steps["Mirror signed image to GHCR"]
+mirror_environment = mirror_step.get("env", {})
+if mirror_environment.get("GH_KEY") != "${{ secrets.GH_KEY }}":
+    raise ValueError("build.yml: GHCR publication credentials must come from GH_KEY")
+mirror_script = mirror_step.get("run", "")
+for required in (
+    '"${ghcr_image}@${DIGEST}"',
+    "GHCR digest already has a valid Cosign signature",
+    "make the package public in GitHub package settings",
+):
+    if required not in mirror_script:
+        raise ValueError(f"build.yml: missing GHCR mirror contract: {required}")
+if mirror_script.count("retry_once mirror_to_ghcr") != 1:
+    raise ValueError("build.yml: GHCR mirror must invoke the two-attempt helper exactly once")
+if image_workflow.count("${{ secrets.GH_KEY }}") != 1:
+    raise ValueError("build.yml: GH_KEY must be exposed only to the GHCR mirror step")
+
+image_step_order = [step["name"] for step in image_document["jobs"]["image"]["steps"]]
+if not (
+    image_step_order.index("Publish stream and immutable tags")
+    < image_step_order.index("Mirror signed image to GHCR")
+    < image_step_order.index("Log out of registries")
+):
+    raise ValueError("build.yml: GHCR mirroring must follow canonical publication and precede cleanup")
+
+logout_script = image_steps["Log out of registries"].get("run", "")
+if 'for registry in "${IMAGE_REGISTRY}" "${GHCR_REGISTRY}"' not in logout_script:
+    raise ValueError("build.yml: cleanup must log out of both OCI registries")
 
 disk_workflow = Path(".forgejo/workflows/build-disk.yml").read_text(encoding="utf-8")
 for required in (
@@ -442,6 +493,95 @@ for required in ("stat --format='%s'", "numfmt --to=iec-i", "Upload asset:"):
 if iso_steps[-1].get("if") != "${{ always() }}" or \
         "disk-handoff.sh cleanup" not in iso_steps[-1].get("run", ""):
     raise ValueError("build-iso.yml: final ISO handoff cleanup must run on failures too")
+
+net_workflow = Path(".forgejo/workflows/build-net.yml").read_text(encoding="utf-8")
+for required in (
+    "workflow_dispatch:",
+    "IMAGE_REPOSITORY: pubcode.archuser.org/universalblue/bazzite-firebadnofire",
+    "IMAGE_MIRROR: ghcr.io/firebadnofire/bazzite-firebadnofire",
+    "bootc-generic-iso",
+    "HANDOFF_FORMATS: netiso",
+    "bash scripts/disk-handoff.sh stage netiso",
+    "Prove the ISO contains no workstation OCI payload",
+    "/LiveOS/squashfs.img",
+    "usr/share/anaconda/interactive-defaults.ks",
+    "0.5 GiB",
+    "1 GiB",
+    "bash scripts/sign-release-artifacts.sh release sig",
+    "GPG_KEY_B64: ${{ secrets.GPG_KEY_B64 }}",
+    "GPG_KEY_PASSWORD: ${{ secrets.GPG_KEY_PASSWORD }}",
+    "tag: netiso-${{ steps.metadata.outputs.release_id }}",
+    "actions/forgejo-release@98265452477dafb3f0f27ba9c462c90b18cb44fd",
+):
+    if required not in net_workflow:
+        raise ValueError(f"build-net.yml: missing network-installer contract: {required}")
+for forbidden in ("--bootc-installer-payload-ref", "upload-artifact@", "download-artifact@"):
+    if forbidden in net_workflow:
+        raise ValueError(f"build-net.yml: forbidden embedded/artifact path: {forbidden}")
+
+net_document = yaml.safe_load(net_workflow)
+if set(net_document["jobs"]) != {"prepare", "netiso", "release"}:
+    raise ValueError("build-net.yml: workflow must contain prepare, netiso, and release jobs")
+if set(net_document["jobs"]["release"]["needs"]) != {"prepare", "netiso"}:
+    raise ValueError("build-net.yml: release must depend on prepare and the network ISO build")
+if "secrets." in yaml.safe_dump(net_document["jobs"]["netiso"]):
+    raise ValueError("build-net.yml: privileged network ISO job must not receive secrets")
+net_release_steps = net_document["jobs"]["release"]["steps"]
+net_collect = next(
+    i for i, step in enumerate(net_release_steps)
+    if "disk-handoff.sh collect" in step.get("run", "")
+)
+net_sign = next(
+    i for i, step in enumerate(net_release_steps)
+    if "sign-release-artifacts.sh release sig" in step.get("run", "")
+)
+net_publish = next(
+    i for i, step in enumerate(net_release_steps)
+    if "forgejo-release@" in step.get("uses", "")
+)
+if not net_collect < net_sign < net_publish:
+    raise ValueError("build-net.yml: handoff verification must precede signing and publication")
+if net_release_steps[-1].get("if") != "${{ always() }}" or \
+        "disk-handoff.sh cleanup" not in net_release_steps[-1].get("run", ""):
+    raise ValueError("build-net.yml: final network ISO handoff cleanup must always run")
+
+installer_containerfile = Path("network-installer/Containerfile").read_text(encoding="utf-8")
+for required in (
+    "FROM quay.io/fedora/fedora-bootc:44@sha256:",
+    "anaconda-core",
+    "anaconda-tui",
+    "dracut-network",
+    "network-installer/iso.yaml /usr/lib/image-builder/bootc/iso.yaml",
+    "network-installer/interactive-defaults.ks /usr/share/anaconda/interactive-defaults.ks",
+):
+    if required not in installer_containerfile:
+        raise ValueError(f"network installer Containerfile is missing: {required}")
+kickstart = Path("network-installer/interactive-defaults.ks").read_text(encoding="utf-8")
+for required in (
+    "text",
+    "network --bootproto=dhcp --device=link --activate --onboot=on",
+    "bootc --source-imgref registry:pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable",
+    "--target-imgref pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable",
+):
+    if required not in kickstart:
+        raise ValueError(f"network installer kickstart is missing: {required}")
+for destructive in ("clearpart", "autopart", "ignoredisk", "zerombr"):
+    if destructive in kickstart:
+        raise ValueError(f"network installer must stay interactive; found {destructive}")
+yaml.safe_load(Path("network-installer/iso.yaml").read_text(encoding="utf-8"))
+mirror_config = Path(
+    "system_files/etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf"
+).read_text(encoding="utf-8")
+tomllib.loads(mirror_config)
+for required in (
+    'prefix = "pubcode.archuser.org/universalblue/bazzite-firebadnofire"',
+    'location = "ghcr.io/firebadnofire/bazzite-firebadnofire"',
+    'location = "pubcode.archuser.org/universalblue/bazzite-firebadnofire"',
+    'pull-from-mirror = "all"',
+    "insecure = false",
+):
+    if required not in mirror_config:
+        raise ValueError(f"registry failover configuration is missing: {required}")
 
 signing_helper = Path("scripts/sign-release-artifacts.sh").read_text(encoding="utf-8")
 for required in (
