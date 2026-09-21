@@ -156,6 +156,10 @@ for required in (
     "test -x /usr/bin/foot",
     "test -x /usr/bin/start-hyprland",
     "test -x /usr/bin/hyprland-dialog",
+    's/^NAME=.*/NAME="firebadnofire-bazzite"/',
+    's/^PRETTY_NAME=.*/PRETTY_NAME="firebadnofire-bazzite"/',
+    "grep -Fqx 'ID=bazzite' /etc/os-release",
+    "grep -Fqx 'ID_LIKE=\"fedora\"' /etc/os-release",
 ):
     if required not in build_source:
         raise ValueError(f"build.sh: missing Hyprland runtime contract: {required}")
@@ -175,6 +179,11 @@ for source_name, source_text in contract_sources.items():
         "test -x /usr/bin/foot",
         "test -x /usr/bin/start-hyprland",
         "test -x /usr/bin/hyprland-dialog",
+        'test "$(readlink /etc/os-release)" = ../usr/lib/os-release',
+        'grep -Fqx "NAME=\\"firebadnofire-bazzite\\"" /etc/os-release',
+        'grep -Fqx "PRETTY_NAME=\\"firebadnofire-bazzite\\"" /etc/os-release',
+        'grep -Fqx "ID=bazzite" /etc/os-release',
+        'grep -Fqx "ID_LIKE=\\"fedora\\"" /etc/os-release',
         'grep -qx "TryExec=/usr/bin/start-hyprland"',
     ):
         if required not in source_text:

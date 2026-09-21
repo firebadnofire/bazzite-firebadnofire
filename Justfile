@@ -68,6 +68,12 @@ inspect target=("localhost/" + image_name) tag=default_tag:
       test -x /usr/bin/hyprland-dialog
       test -x /usr/libexec/bazzite-firebadnofire-start-hyprland
       test -x /usr/libexec/bazzite-firebadnofire-screenshot
+      test -L /etc/os-release
+      test "$(readlink /etc/os-release)" = ../usr/lib/os-release
+      grep -Fqx "NAME=\"firebadnofire-bazzite\"" /etc/os-release
+      grep -Fqx "PRETTY_NAME=\"firebadnofire-bazzite\"" /etc/os-release
+      grep -Fqx "ID=bazzite" /etc/os-release
+      grep -Fqx "ID_LIKE=\"fedora\"" /etc/os-release
       test -f /usr/share/wayland-sessions/hyprland.desktop
       grep -qx "Exec=/usr/libexec/bazzite-firebadnofire-start-hyprland" \
         /usr/share/wayland-sessions/hyprland.desktop

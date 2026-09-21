@@ -21,6 +21,7 @@ installing it on a workstation.
 | --- | --- |
 | Architecture | x86_64 only |
 | Base | Digest-pinned `ghcr.io/ublue-os/bazzite-nvidia-open:stable` |
+| OS display name | `firebadnofire-bazzite` in `NAME` and `PRETTY_NAME`; compatibility remains `ID=bazzite` and `ID_LIKE=fedora` |
 | GPU target | NVIDIA Turing and newer, including GeForce RTX; other hardware inherits the upstream Bazzite behavior |
 | Desktop | Hyprland 0.56-compatible Lua configuration with XWayland, adapted from the operator's workstation setup |
 | Gaming | Inherited Bazzite Steam, Gamescope, codecs, controller support, and gaming tools |
@@ -780,6 +781,7 @@ In the VM, verify at minimum:
 
 ```bash
 sudo bootc status
+grep -E '^(NAME|PRETTY_NAME|ID|ID_LIKE)=' /etc/os-release
 systemctl is-enabled libvirtd.service
 rpm -q foot hyprland hyprland-guiutils hyprpaper xdg-desktop-portal-hyprland qemu-kvm virt-manager
 ```

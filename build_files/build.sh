@@ -101,6 +101,14 @@ install -D -m 0644 \
 # the repository win over package defaults.
 cp -avf /ctx/system_files/. /
 
+# Customize the human-facing image name in the authoritative os-release file.
+# Preserve ID, ID_LIKE, VARIANT_ID, and upstream release/support metadata so
+# software continues to recognize the image as Bazzite/Fedora compatible.
+sed -i \
+    -e 's/^NAME=.*/NAME="firebadnofire-bazzite"/' \
+    -e 's/^PRETTY_NAME=.*/PRETTY_NAME="firebadnofire-bazzite"/' \
+    /usr/lib/os-release
+
 chmod 0755 \
     /usr/libexec/bazzite-firebadnofire-rotate-wallpaper \
     /usr/libexec/bazzite-firebadnofire-screenshot \
@@ -143,6 +151,12 @@ test -x /usr/libexec/bazzite-firebadnofire-rotate-wallpaper
 test -x /usr/bin/looking-glass-client
 test -x /usr/libexec/xdg-desktop-portal-hyprland
 test -x /usr/libexec/hyprpolkitagent
+test -L /etc/os-release
+test "$(readlink /etc/os-release)" = ../usr/lib/os-release
+grep -Fqx 'NAME="firebadnofire-bazzite"' /etc/os-release
+grep -Fqx 'PRETTY_NAME="firebadnofire-bazzite"' /etc/os-release
+grep -Fqx 'ID=bazzite' /etc/os-release
+grep -Fqx 'ID_LIKE="fedora"' /etc/os-release
 test -f /usr/share/wayland-sessions/hyprland.desktop
 test -f /usr/share/bazzite-firebadnofire/hyprland.lua
 test -f /usr/share/bazzite-firebadnofire/hypridle.conf
