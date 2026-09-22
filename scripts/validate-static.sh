@@ -259,6 +259,10 @@ for path in sorted(Path(".forgejo/workflows").glob("*.yml")):
                 )
 
 image_workflow = Path(".forgejo/workflows/build.yml").read_text(encoding="utf-8")
+if "  push:\n    branches: [main]\n" not in image_workflow:
+    raise ValueError("build.yml: every push to main must trigger the image workflow")
+if "paths-ignore:" in image_workflow:
+    raise ValueError("build.yml: on-commit image builds must not exclude changed paths")
 for required in (
     'cron: "17 4 * * *"',
     "--format '{{json .Manifest}}'",

@@ -521,16 +521,16 @@ commit a private key.
 
 - a pull request targeting `main` runs validation, builds the complete image,
   and inspects it, but never logs in, pushes, or signs;
-- a push to `main` performs those checks, publishes, signs, and verifies;
+- every push to `main`, including documentation-only commits, performs those
+  checks, publishes, signs, and verifies;
 - a schedule runs every day at **04:17 UTC** from the current default-branch
   revision and follows the same production path as a push to `main`;
 - a manual dispatch builds the selected ref and follows the same production
   publication path.
 
-Markdown-only pushes to `main` are ignored, but the independent daily schedule
-still runs. Start a manual build from **Actions → Validate, build, publish, and
-sign → Run workflow**, selecting the ref to publish. Before a push, schedule,
-or manual production run, configure `REGISTRY_TOKEN`,
+Start a manual build from **Actions → Validate, build, publish, and sign → Run
+workflow**, selecting the ref to publish. Before a push, schedule, or manual
+production run, configure `REGISTRY_TOKEN`,
 `GH_KEY`, `COSIGN_PRIVATE_KEY`, and `COSIGN_PASSWORD`. For a non-publishing build
 verification, open or update a pull request targeting `main`; pull-request runs
 build and inspect the image but do not receive or use publication secrets.
