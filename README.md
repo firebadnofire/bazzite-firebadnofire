@@ -14,12 +14,12 @@ pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable
 The synchronized transport mirror is
 `ghcr.io/firebadnofire/bazzite-firebadnofire:stable`. The canonical `pubcode`
 name remains the image and update identity. A repository-scoped
-`containers-registries.conf` entry tries the canonical endpoint first and GHCR
-second for pulls of that identity; TLS certificate validation remains enabled
-for both. Because containers/image normally tries entries named `mirror`
-before `location`, the file intentionally places `pubcode` in the mirror slot
-and GHCR in the location slot to obtain that network order without changing the
-logical image reference.
+`containers-registries.conf` entry tries GHCR first and falls back to the
+canonical Pubcode endpoint for pulls of that identity; TLS certificate
+validation remains enabled for both. Because containers/image tries entries
+named `mirror` before `location`, GHCR occupies the mirror slot and Pubcode the
+source-location slot without changing the logical image reference shown by
+bootc.
 
 This is a personal image, not an official Bazzite or Universal Blue edition.
 Read the [risk and validation status](#validation-status-and-known-risks) before
@@ -416,8 +416,7 @@ Do not put their values in files, workflow logs, commits, or issue text.
 | Secret | Purpose | Required for |
 | --- | --- | --- |
 | `REGISTRY_TOKEN` | Sensitive Forgejo PAT with `write:package` scope, owned by `firebadnofire` and permitted to publish packages for `universalblue` | Main-branch push, daily schedule, or manual image publication |
-| `GH_KEY` | Sensitive GitHub classic PAT owned by `firebadnofire` with only `write:packages` scope | Required GHCR mirror for every non-PR image publication |
-| `GITHUB_RELEASE_TOKEN` | Sensitive fine-grained GitHub PAT limited to `firebadnofire/bazzite-firebadnofire` with repository Contents read/write permission | Required GitHub mirror of every manual network ISO release |
+| `GH_KEY` | Sensitive GitHub classic PAT owned by `firebadnofire` with `write:packages` and `public_repo` scopes | Required GHCR mirror for every non-PR image publication and GitHub release mirror for every manual network ISO release |
 | `COSIGN_PRIVATE_KEY` | Sensitive contents of the private `cosign.key` | OCI signing in production image runs |
 | `COSIGN_PASSWORD` | Sensitive password for `COSIGN_PRIVATE_KEY` | OCI signing in production image runs |
 | `GPG_KEY_B64` | Sensitive base64 encoding of the private OpenPGP key whose primary fingerprint is `7D6EF134D851C8DA0862D97494F31AF374E2EE3C` | Manual disk, offline ISO, and network ISO release signing |
@@ -461,6 +460,25 @@ server log for `actions_ready_job` or `checkJobsOfRun` errors. A runner log can
 show task-fetch failures, but the server owns the transition from `blocked` to
 `waiting` after a successful dependency.
 
+The September 21, 2026 incident was traced to the public Forgejo server's
+LevelDB queue: `Emit ready jobs of run ...: write
+/data/gitea/queues/common/004805.log: no space left on device`. This affected
+the plain dependency diagnostic as well as artifact workflows. The queue kept
+returning the write error even after the `/data` filesystem had about 19 GiB
+free. Restarting the public `forgejo` container reopened the journal and
+restored queue writes. This was a server queue failure, not a `needs` syntax
+or job-output compatibility problem.
+
+For this specific error, inspect free bytes and inodes **inside the public
+Forgejo container** first. Restore capacity if necessary, then perform a
+controlled restart of that service and check its queue log and new server
+errors. Do not delete the queue database. A successful predecessor whose
+completion event could not be queued may leave an old run blocked; cancel
+that stale run and dispatch the dependency diagnostic afresh before retrying
+the artifact build. A restart alone does not prove the new workflow succeeds.
+The public service is on `mainsrv.archuser.org`, reachable by SSH from
+`192.168.86.54`; the `forgejo` container on `.54` serves a different site.
+
 Create the PAT from the publishing account's Forgejo user settings with only
 `write:package`, then add its value at **Settings → Actions → Secrets** as
 `REGISTRY_TOKEN`. The token owner must be an organization owner or belong to a
@@ -468,21 +486,21 @@ team allowed to publish packages for `universalblue`. A successful Docker login
 only proves token authentication; the workflow reports a separate actionable
 error if the subsequent push lacks organization package permission.
 
-Create `GH_KEY` as a GitHub personal access token (classic) with only
-`write:packages`, then store it in the same Forgejo Actions secret settings.
+Use the existing `GH_KEY` GitHub personal access token (classic), with
+`write:packages` for GHCR and `public_repo` for releases in the public GitHub
+mirror repository. Store it in the same Forgejo Actions secret settings.
 GitHub Packages does not accept a fine-grained PAT for external GHCR
-publication. Avoid the token-creation UI's automatic broad `repo` selection by
-using GitHub's
-[`write:packages`-only token URL](https://github.com/settings/tokens/new?scopes=write:packages).
-This workflow does not need GitHub repository, release, workflow, or
-package-deletion permission. The token value must never appear in a workflow
-file or log.
+publication. For a new token, use GitHub's
+[`write:packages` and `public_repo` token URL](https://github.com/settings/tokens/new?scopes=write:packages,public_repo)
+instead of granting private-repository access through the broader `repo` scope.
+Sharing the token gives it public-repository write access beyond its previous
+package-only role; keep it exposed only to the respective mirror steps.
+The token value must never appear in a workflow file or log.
 
-Create `GITHUB_RELEASE_TOKEN` as a separate fine-grained GitHub personal access
-token scoped only to `firebadnofire/bazzite-firebadnofire`, with repository
-**Contents: Read and write** permission and no package permission. Store it in
-Forgejo Actions secrets. Do not reuse `GH_KEY`: its package-only scope is
-deliberately insufficient to create releases. The GitHub repository must
+No separate `GITHUB_RELEASE_TOKEN` secret is needed: the network ISO workflow
+maps `GH_KEY` into the release helper's `GITHUB_RELEASE_TOKEN` environment
+variable. If the existing token has only package permissions, the operator must
+add `public_repo` before release mirroring can succeed. The GitHub repository must
 already contain the triggering commit; the network release mirror verifies the
 exact 40-character source revision and fails closed if source mirroring has not
 completed.
@@ -693,13 +711,22 @@ Kickstart and mirror configuration before release.
 The installer is text-mode and interactive so booting the media does not
 silently select or erase a disk. It activates DHCP, then Anaconda resolves and
 pulls the then-current
-`pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable` only after
-boot. The repository-scoped containers/image configuration tries `pubcode`
-first and the synchronized
-`ghcr.io/firebadnofire/bazzite-firebadnofire:stable` endpoint second.
+`pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable` logical stream
+only after boot. The repository-scoped containers/image configuration pulls
+from synchronized
+`ghcr.io/firebadnofire/bazzite-firebadnofire:stable` first and falls back to
+Pubcode.
 Installation therefore requires working network link, DHCP, DNS, trusted CA
 time/state, and outbound HTTPS to at least one endpoint. There is no offline
 fallback in this ISO.
+
+During the OCI pull, the text installer displays a continuously moving
+`Downloading operating system image` bar and continues to surface bootc phase
+and error messages. The bar is intentionally indeterminate: the current
+Anaconda/bootc task interface does not provide a trustworthy total byte count,
+so displaying a fabricated percentage would be misleading. The network ISO
+build patches this narrow UI boundary with exact checks and fails if a future
+Anaconda update no longer matches the validated integration point.
 
 To avoid duplicating hundreds of MiB in the live filesystem, the installer is
 English-only and carries boot-time firmware in its no-hostonly initramfs rather
@@ -715,11 +742,11 @@ The live environment also omits its own OSTree deployment repository: it is
 not an updatable installed system, and the retained bootc client initializes
 the destination from the separately downloaded workstation image.
 
-The prepare job requires the canonical `stable` endpoint and records its digest
-as release provenance. It also audits the GHCR mirror anonymously: a reachable
-but different digest fails the build, while an unavailable or access-controlled
-mirror produces an explicit warning and leaves canonical-only installation
-available. This is a snapshot, not a pin for installation: a later boot
+The prepare job resolves the GHCR `stable` endpoint first and records its digest
+as release provenance. When GHCR is available it audits Pubcode; when GHCR is
+unavailable it warns and falls back to Pubcode. If both endpoints are reachable
+but resolve to different digests, the build fails closed. This is a snapshot,
+not a pin for installation: a later boot
 intentionally resolves `stable` again to satisfy the latest-image contract.
 Consequently the signed ISO authenticates the installer bits but does not freeze
 the OS payload selected later. Verify the current OCI digest and its Cosign
@@ -1043,12 +1070,12 @@ sudo bootc status
 
 The shipped repository-scoped registry configuration preserves
 `pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable` as the origin
-shown by bootc. Pulls try that canonical endpoint first, then transparently
-rewrite the same repository/tag or digest to
-`ghcr.io/firebadnofire/bazzite-firebadnofire` if needed. Keep the two `stable`
-tags synchronized; the network-installer workflow fails before building when
-both are reachable and their resolved digests differ, and warns when GHCR cannot
-be audited anonymously. The fallback does not disable TLS,
+shown by bootc. Pulls transparently rewrite the same repository/tag or digest to
+`ghcr.io/firebadnofire/bazzite-firebadnofire` first, then fall back to Pubcode
+if GHCR is unavailable. Keep the two `stable` tags synchronized; the
+network-installer workflow fails before building when both are reachable and
+their resolved digests differ, and warns when either fallback audit cannot run.
+The fallback does not disable TLS,
 accept a different repository name, or broaden mirroring to unrelated images.
 
 Reboot only after reviewing the staged deployment. A digest-pinned deployment

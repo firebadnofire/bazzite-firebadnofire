@@ -29,6 +29,7 @@ RUN dnf5 -y --setopt=install_weak_deps=False install \
 
 COPY network-installer/iso.yaml /usr/lib/image-builder/bootc/iso.yaml
 COPY network-installer/interactive-defaults.ks /usr/share/anaconda/interactive-defaults.ks
+COPY network-installer/patch-anaconda-progress.py /usr/libexec/patch-anaconda-progress
 COPY system_files/etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf \
     /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
 
@@ -39,6 +40,8 @@ COPY system_files/etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirr
 # switch-root, when installer services can still request additional modules.
 # The installer is English-only.
 RUN set -Eeuo pipefail; \
+    python /usr/libexec/patch-anaconda-progress; \
+    rm -f /usr/libexec/patch-anaconda-progress; \
     install -d -m 0755 /boot/efi /var/mnt; \
     cp -a /usr/lib/efi/*/*/EFI /boot/efi/; \
     printf '%s\n' 'install:x:0:0:root:/root:/usr/libexec/anaconda/run-anaconda' \

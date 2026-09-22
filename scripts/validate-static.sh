@@ -23,6 +23,7 @@ required_files=(
     network-installer/Containerfile
     network-installer/interactive-defaults.ks
     network-installer/iso.yaml
+    network-installer/patch-anaconda-progress.py
     system_files/etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
     scripts/test-oci-publication.sh
     scripts/test-retry-once.sh
@@ -92,6 +93,7 @@ shellcheck \
     system_files/usr/libexec/bazzite-firebadnofire-start-hyprland
 
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-repo-keys.py
+PYTHONDONTWRITEBYTECODE=1 python3 network-installer/patch-anaconda-progress.py --self-test
 bash scripts/test-include-packages.sh
 bash scripts/test-oci-publication.sh
 bash scripts/test-retry-once.sh
@@ -555,6 +557,10 @@ for required in (
     "workflow_dispatch:",
     "IMAGE_REPOSITORY: pubcode.archuser.org/universalblue/bazzite-firebadnofire",
     "IMAGE_MIRROR: ghcr.io/firebadnofire/bazzite-firebadnofire",
+    "Resolve the preferred GHCR stream and audit Pubcode",
+    'selected_digest="$(resolve_digest "${IMAGE_MIRROR}"',
+    'selected_digest="$(resolve_digest "${IMAGE_REPOSITORY}")"',
+    "reachable stable tags are not synchronized across GHCR and Pubcode",
     "bootc-generic-iso",
     "--file network-installer/Containerfile .",
     "HANDOFF_FORMATS: netiso",
@@ -570,7 +576,7 @@ for required in (
     "bash scripts/sign-release-artifacts.sh release sig",
     "GPG_KEY_B64: ${{ secrets.GPG_KEY_B64 }}",
     "GPG_KEY_PASSWORD: ${{ secrets.GPG_KEY_PASSWORD }}",
-    "GITHUB_RELEASE_TOKEN: ${{ secrets.GITHUB_RELEASE_TOKEN }}",
+    "GITHUB_RELEASE_TOKEN: ${{ secrets.GH_KEY }}",
     "GITHUB_RELEASE_REPOSITORY: firebadnofire/bazzite-firebadnofire",
     "bash scripts/publish-github-release.sh release release-notes.md",
     "tag: netiso-${{ steps.metadata.outputs.release_id }}",
@@ -610,9 +616,9 @@ if not net_collect < net_sign < net_publish < net_github_publish:
     raise ValueError("build-net.yml: handoff verification must precede signing and publication")
 github_step = net_release_steps[net_github_publish]
 if github_step.get("env", {}).get("GITHUB_RELEASE_TOKEN") != \
-        "${{ secrets.GITHUB_RELEASE_TOKEN }}":
-    raise ValueError("build-net.yml: GitHub release credentials must come from GITHUB_RELEASE_TOKEN")
-if net_workflow.count("${{ secrets.GITHUB_RELEASE_TOKEN }}") != 1:
+        "${{ secrets.GH_KEY }}":
+    raise ValueError("build-net.yml: GitHub release credentials must come from GH_KEY")
+if net_workflow.count("${{ secrets.GH_KEY }}") != 1:
     raise ValueError("build-net.yml: GitHub release token must be exposed only to its mirror step")
 if net_release_steps[-1].get("if") != "${{ always() }}" or \
         "disk-handoff.sh cleanup" not in net_release_steps[-1].get("run", ""):
@@ -651,6 +657,8 @@ for required in (
     "test ! -e /sysroot/ostree/repo",
     "network-installer/iso.yaml /usr/lib/image-builder/bootc/iso.yaml",
     "network-installer/interactive-defaults.ks /usr/share/anaconda/interactive-defaults.ks",
+    "network-installer/patch-anaconda-progress.py /usr/libexec/patch-anaconda-progress",
+    "python /usr/libexec/patch-anaconda-progress",
 ):
     if required not in installer_containerfile:
         raise ValueError(f"network installer Containerfile is missing: {required}")
@@ -687,6 +695,30 @@ for required in (
 ):
     if required not in mirror_config:
         raise ValueError(f"registry failover configuration is missing: {required}")
+mirror_document = tomllib.loads(mirror_config)
+registries = mirror_document.get("registry", [])
+if len(registries) != 1:
+    raise ValueError("registry failover configuration must contain exactly one registry")
+registry = registries[0]
+if registry.get("location") != \
+        "pubcode.archuser.org/universalblue/bazzite-firebadnofire":
+    raise ValueError("Pubcode must remain the fallback source location")
+mirrors = registry.get("mirror", [])
+if len(mirrors) != 1 or mirrors[0].get("location") != \
+        "ghcr.io/firebadnofire/bazzite-firebadnofire":
+    raise ValueError("GHCR must be the first and only preferred mirror")
+
+progress_patch = Path("network-installer/patch-anaconda-progress.py").read_text(
+    encoding="utf-8"
+)
+for required in (
+    "Downloading operating system image",
+    "bootc_events.get(timeout=1.0)",
+    "expected one patch anchor",
+    "py_compile.compile",
+):
+    if required not in progress_patch:
+        raise ValueError(f"Anaconda progress patch is missing: {required}")
 
 github_release_helper = Path("scripts/publish-github-release.sh").read_text(encoding="utf-8")
 for required in (

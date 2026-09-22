@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 trap 'echo "error: GitHub release mirroring failed at line ${LINENO}; inspect the API response above" >&2' ERR
 
-: "${GITHUB_RELEASE_TOKEN:?configure the GITHUB_RELEASE_TOKEN Forgejo secret}"
+: "${GITHUB_RELEASE_TOKEN:?map the GH_KEY Forgejo secret to GITHUB_RELEASE_TOKEN}"
 : "${GITHUB_RELEASE_REPOSITORY:?set owner/repository for the GitHub mirror}"
 : "${GITHUB_RELEASE_TAG:?set the GitHub release tag}"
 : "${GITHUB_RELEASE_TITLE:?set the GitHub release title}"

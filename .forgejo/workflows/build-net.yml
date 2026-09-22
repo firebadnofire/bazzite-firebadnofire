@@ -55,7 +55,7 @@ jobs:
           docker run --rm "${DOCKER_SMOKE_IMAGE}"
           docker run --rm --privileged "${IMAGE_BUILDER_IMAGE}" version
 
-      - name: Resolve canonical stream and audit the mirror
+      - name: Resolve the preferred GHCR stream and audit Pubcode
         id: image
         shell: bash
         run: |
@@ -76,25 +76,37 @@ jobs:
             printf '%s\n' "${digest}"
           }
 
-          canonical_digest="$(resolve_digest "${IMAGE_REPOSITORY}")"
-          mirror_log="$(mktemp)"
-          trap 'rm -f "${mirror_log}"' EXIT
-          if mirror_digest="$(resolve_digest "${IMAGE_MIRROR}" 2>"${mirror_log}")"; then
-            [[ "${canonical_digest}" == "${mirror_digest}" ]] || {
-              echo "error: reachable stable tags are not synchronized across the canonical registry and GHCR mirror" >&2
-              echo "error: canonical=${canonical_digest} mirror=${mirror_digest}" >&2
-              exit 1
-            }
-            echo "Verified synchronized GHCR mirror: ${mirror_digest}"
+          preferred_log="$(mktemp)"
+          fallback_log="$(mktemp)"
+          trap 'rm -f "${preferred_log}" "${fallback_log}"' EXIT
+          if selected_digest="$(resolve_digest "${IMAGE_MIRROR}" 2>"${preferred_log}")"; then
+            selected_repository="${IMAGE_MIRROR}"
+            if fallback_digest="$(resolve_digest "${IMAGE_REPOSITORY}" 2>"${fallback_log}")"; then
+              [[ "${selected_digest}" == "${fallback_digest}" ]] || {
+                echo "error: reachable stable tags are not synchronized across GHCR and Pubcode" >&2
+                echo "error: ghcr=${selected_digest} pubcode=${fallback_digest}" >&2
+                exit 1
+              }
+              echo "Verified synchronized Pubcode fallback: ${fallback_digest}"
+            else
+              echo "warning: Pubcode fallback could not be audited; GHCR installation remains available" >&2
+              sed -n '1,20p' "${fallback_log}" >&2
+            fi
           else
-            echo "warning: GHCR mirror could not be audited anonymously; canonical installation remains available" >&2
-            sed -n '1,20p' "${mirror_log}" >&2
+            echo "warning: preferred GHCR endpoint is unavailable; falling back to Pubcode" >&2
+            sed -n '1,20p' "${preferred_log}" >&2
+            selected_digest="$(resolve_digest "${IMAGE_REPOSITORY}")"
+            selected_repository="${IMAGE_REPOSITORY}"
           fi
-          echo "digest=${canonical_digest}" >> "${GITHUB_OUTPUT}"
+          [[ "${selected_digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "error: selected stable digest is invalid: ${selected_digest}" >&2
+            exit 1
+          }
+          echo "digest=${selected_digest}" >> "${GITHUB_OUTPUT}"
           daemon_id="$(docker info --format '{{.ID}}')"
           [[ -n "${daemon_id}" ]]
           echo "daemon_id=${daemon_id}" >> "${GITHUB_OUTPUT}"
-          echo "Network installer snapshot: ${IMAGE_REPOSITORY}@${canonical_digest}"
+          echo "Network installer snapshot: ${selected_repository}@${selected_digest}"
           echo "The ISO will resolve :stable again after boot."
 
   netiso:
@@ -268,6 +280,10 @@ jobs:
             "${inspection}/registries.conf"
           grep -Fq 'location = "ghcr.io/firebadnofire/bazzite-firebadnofire"' \
             "${inspection}/registries.conf"
+          grep -A4 -F "[[registry]]" "${inspection}/registries.conf" | \
+            grep -Fqx 'location = "pubcode.archuser.org/universalblue/bazzite-firebadnofire"'
+          grep -A4 -F "[[registry.mirror]]" "${inspection}/registries.conf" | \
+            grep -Fqx 'location = "ghcr.io/firebadnofire/bazzite-firebadnofire"'
           echo "Verified network-only installer payload and canonical/mirror configuration"
 
       - name: Report size goals and stage the ISO
@@ -439,8 +455,8 @@ jobs:
 
           This ISO contains the installer environment, not the workstation OCI
           image. After boot it resolves and pulls the then-current stable image
-          over HTTPS. The canonical image identity is ${IMAGE_REPOSITORY}:stable;
-          ${IMAGE_MIRROR}:stable is the configured fallback endpoint.
+          over HTTPS. The canonical image identity is ${IMAGE_REPOSITORY}:stable.
+          Pulls prefer ${IMAGE_MIRROR}:stable and fall back to Pubcode if needed.
 
           Verify the ISO checksum and detached binary signatures:
 
@@ -492,7 +508,7 @@ jobs:
       - name: Mirror and verify the network ISO release on GitHub
         shell: bash
         env:
-          GITHUB_RELEASE_TOKEN: ${{ secrets.GITHUB_RELEASE_TOKEN }}
+          GITHUB_RELEASE_TOKEN: ${{ secrets.GH_KEY }}
           GITHUB_RELEASE_REPOSITORY: firebadnofire/bazzite-firebadnofire
           GITHUB_RELEASE_TAG: netiso-${{ steps.metadata.outputs.release_id }}
           GITHUB_RELEASE_TITLE: bazzite-firebadnofire network ISO ${{ steps.metadata.outputs.release_id }}

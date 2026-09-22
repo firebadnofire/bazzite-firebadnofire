@@ -61,6 +61,10 @@ inspect target=("localhost/" + image_name) tag=default_tag:
       test -s /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
       grep -Fqx "prefix = \"pubcode.archuser.org/universalblue/bazzite-firebadnofire\"" /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
       grep -Fqx "location = \"ghcr.io/firebadnofire/bazzite-firebadnofire\"" /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
+      grep -A4 -F "[[registry]]" /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf | \
+        grep -Fqx "location = \"pubcode.archuser.org/universalblue/bazzite-firebadnofire\""
+      grep -A4 -F "[[registry.mirror]]" /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf | \
+        grep -Fqx "location = \"ghcr.io/firebadnofire/bazzite-firebadnofire\""
       Hyprland --verify-config --i-am-really-stupid \
         --config /usr/share/bazzite-firebadnofire/hyprland.lua
       test -x /usr/bin/looking-glass-client
