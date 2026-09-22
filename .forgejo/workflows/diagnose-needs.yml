@@ -1,0 +1,55 @@
+---
+name: Diagnose Forgejo dependent-job dispatch
+
+on:
+  workflow_dispatch:
+
+jobs:
+  simple_a:
+    name: A - succeed
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Complete job A
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "Job A completed"
+
+  simple_b:
+    name: B - consume needs
+    needs: simple_a
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Prove a simple dependency was dispatched
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "Job B ran after job A"
+
+  output_a:
+    name: Output A - export value
+    needs: simple_b
+    runs-on: ubuntu-22.04
+    outputs:
+      marker: ${{ steps.export.outputs.marker }}
+    steps:
+      - name: Export a job output
+        id: export
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "marker=forgejo-needs-output-ok" >> "${GITHUB_OUTPUT}"
+
+  output_b:
+    name: Output B - consume value
+    needs: output_a
+    runs-on: ubuntu-22.04
+    env:
+      OUTPUT_MARKER: ${{ needs.output_a.outputs.marker }}
+    steps:
+      - name: Prove a dependent job received the output
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ "${OUTPUT_MARKER}" == "forgejo-needs-output-ok" ]]
+          echo "Dependent job output propagation passed"

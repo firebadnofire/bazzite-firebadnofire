@@ -7,6 +7,7 @@ readonly root
 cd "${root}"
 
 required_files=(
+    .forgejo/workflows/diagnose-needs.yml
     .forgejo/workflows/build-iso.yml
     .forgejo/workflows/build-net.yml
     bazzite-firebadnofire.env
@@ -612,6 +613,25 @@ if net_workflow.count("${{ secrets.GITHUB_RELEASE_TOKEN }}") != 1:
 if net_release_steps[-1].get("if") != "${{ always() }}" or \
         "disk-handoff.sh cleanup" not in net_release_steps[-1].get("run", ""):
     raise ValueError("build-net.yml: final network ISO handoff cleanup must always run")
+
+needs_diagnostic = Path(".forgejo/workflows/diagnose-needs.yml").read_text(encoding="utf-8")
+needs_document = yaml.safe_load(needs_diagnostic)
+if set(needs_document["jobs"]) != {"simple_a", "simple_b", "output_a", "output_b"}:
+    raise ValueError("diagnose-needs.yml: diagnostic job topology changed")
+for job_name, job in needs_document["jobs"].items():
+    if job.get("runs-on") != "ubuntu-22.04":
+        raise ValueError(f"diagnose-needs.yml: {job_name} must use ubuntu-22.04")
+if needs_document["jobs"]["simple_b"].get("needs") != "simple_a":
+    raise ValueError("diagnose-needs.yml: simple dependency pair is missing")
+if needs_document["jobs"]["output_a"].get("needs") != "simple_b":
+    raise ValueError("diagnose-needs.yml: output test must follow the simple pair")
+if needs_document["jobs"]["output_b"].get("needs") != "output_a":
+    raise ValueError("diagnose-needs.yml: output consumer dependency is missing")
+if needs_document["jobs"]["output_b"].get("env", {}).get("OUTPUT_MARKER") != \
+        "${{ needs.output_a.outputs.marker }}":
+    raise ValueError("diagnose-needs.yml: output consumer expression is missing")
+if "${GITHUB_OUTPUT}" not in needs_diagnostic:
+    raise ValueError("diagnose-needs.yml: output producer must use GITHUB_OUTPUT")
 
 installer_containerfile = Path("network-installer/Containerfile").read_text(encoding="utf-8")
 for required in (

@@ -433,6 +433,34 @@ the automatic token unless organization package publication is separately
 proved on the deployed Forgejo version. `REGISTRY_USERNAME`, `IMAGE_REGISTRY`,
 and `IMAGE_PATH` are configuration values, not secrets.
 
+If any artifact workflow completes `prepare` but leaves its dependent build job
+at **Blocked**, with zero duration and no steps, manually dispatch **Actions →
+Diagnose Forgejo dependent-job dispatch → Run workflow**. This diagnostic needs
+no secrets and deliberately contains no image, Docker, cache, disk, or release
+commands. It first proves a plain `simple_a` → `simple_b` dependency, then writes
+a job output through `$GITHUB_OUTPUT` and consumes it through
+`${{ needs.output_a.outputs.marker }}`. All four jobs use the same
+`ubuntu-22.04` runner label as the artifact workflows.
+
+Interpret the first job that does not start:
+
+- `simple_b` blocked after `simple_a` succeeds means Forgejo did not perform its
+  server-side dependent-job transition; job outputs and artifact commands are
+  not involved.
+- `output_a` blocked after `simple_b` succeeds is the same scheduling failure on
+  a second plain dependency transition.
+- `output_b` blocked or failed after `output_a` succeeds isolates job-output
+  scheduling or propagation.
+- all four jobs succeeding means the scheduler and job-output path worked for
+  that run; compare Forgejo server queue errors and runner availability at the
+  timestamps of the failed artifact run.
+
+Do not compensate for a blocked diagnostic by weakening image validation or
+rewriting artifact build commands. Preserve the run ID and inspect the Forgejo
+server log for `actions_ready_job` or `checkJobsOfRun` errors. A runner log can
+show task-fetch failures, but the server owns the transition from `blocked` to
+`waiting` after a successful dependency.
+
 Create the PAT from the publishing account's Forgejo user settings with only
 `write:package`, then add its value at **Settings → Actions → Secrets** as
 `REGISTRY_TOKEN`. The token owner must be an organization owner or belong to a
