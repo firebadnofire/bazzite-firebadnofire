@@ -9,6 +9,14 @@ readonly config_dir="${config_home}/hypr"
 readonly defaults_dir="/usr/share/bazzite-firebadnofire"
 readonly lua_config="${config_dir}/hyprland.lua"
 readonly legacy_config="${config_dir}/hyprland.conf"
+readonly session_target="hyprland-session.target"
+
+# This wrapper owns the session target lifecycle. Disable Hyprland's optional
+# built-in target handling so there is only one startup and teardown path.
+export HYPRLAND_NO_SD_TARGET=1
+export XDG_CURRENT_DESKTOP=Hyprland
+export XDG_SESSION_DESKTOP=Hyprland
+export XDG_SESSION_TYPE=wayland
 
 # These identify the exact image-managed defaults shipped before this Lua
 # configuration. Never replace a file after the operator has changed it.
@@ -17,6 +25,12 @@ readonly kitty_lua_sha256="b1f3f2745e41db38865a50dced9ea91d6a80918ba5a3fceb2396c
 readonly transitional_conf_sha256="663538eaf801c9340bfcc030adfc7f58ac1f09dda89367e03959226f6aa6d660"
 
 install -d -m 0700 "${config_dir}"
+
+# xdg-user-dirs-update creates the configured directories for a new account.
+# Never run it over an existing file: custom paths remain entirely user-owned.
+if [[ ! -e "${config_home}/user-dirs.dirs" ]]; then
+    /usr/bin/xdg-user-dirs-update
+fi
 
 # Upgrade only exact, unmodified defaults from prior image revisions. The
 # transitional .conf may remain as a reference; Hyprland 0.55+ loads the new
@@ -49,8 +63,127 @@ fi
 
 install -d -m 0700 "${config_home}/wallpapers"
 
+environment_value() {
+    local variable_name="$1"
+    local environment_line
+
+    while IFS= read -r environment_line; do
+        if [[ "${environment_line}" == "${variable_name}="* ]]; then
+            printf '%s\n' "${environment_line#*=}"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+hyprland_pid=""
+session_started=false
+
+# ShellCheck cannot see calls made indirectly by the EXIT trap below.
+# shellcheck disable=SC2317
+cleanup_session() {
+    local exit_status=$?
+
+    trap - EXIT HUP INT TERM
+    if [[ -n "${hyprland_pid}" ]] && kill -0 "${hyprland_pid}" 2>/dev/null; then
+        kill -TERM "${hyprland_pid}"
+        set +e
+        wait "${hyprland_pid}"
+        set -e
+    fi
+    if [[ "${session_started}" == true ]]; then
+        if ! systemctl --user stop "${session_target}"; then
+            printf 'warning: could not stop %s during Hyprland teardown\n' \
+                "${session_target}" >&2
+        fi
+    fi
+    exit "${exit_status}"
+}
+
+# ShellCheck cannot see calls made indirectly by the signal traps below.
+# shellcheck disable=SC2317
+forward_signal() {
+    local signal_name="$1"
+
+    if [[ -n "${hyprland_pid}" ]] && kill -0 "${hyprland_pid}" 2>/dev/null; then
+        kill -s "${signal_name}" "${hyprland_pid}"
+    fi
+}
+
+trap cleanup_session EXIT
+trap 'forward_signal HUP' HUP
+trap 'forward_signal INT' INT
+trap 'forward_signal TERM' TERM
+
+manager_environment="$(systemctl --user show-environment)"
+previous_signature="$(environment_value HYPRLAND_INSTANCE_SIGNATURE \
+    <<< "${manager_environment}" || true)"
+
 if [[ -e "${lua_config}" ]]; then
-    exec /usr/bin/start-hyprland
+    hyprland_command=(/usr/bin/start-hyprland)
+else
+    hyprland_command=(/usr/bin/start-hyprland -- --config "${legacy_config}")
 fi
 
-exec /usr/bin/start-hyprland -- --config "${legacy_config}"
+"${hyprland_command[@]}" &
+hyprland_pid=$!
+
+for _ in {1..300}; do
+    if ! kill -0 "${hyprland_pid}" 2>/dev/null; then
+        printf 'error: Hyprland exited before its graphical session could be activated\n' >&2
+        set +e
+        wait "${hyprland_pid}"
+        set -e
+        exit 1
+    fi
+
+    manager_environment="$(systemctl --user show-environment)"
+    manager_desktop="$(environment_value XDG_CURRENT_DESKTOP \
+        <<< "${manager_environment}" || true)"
+    manager_signature="$(environment_value HYPRLAND_INSTANCE_SIGNATURE \
+        <<< "${manager_environment}" || true)"
+    manager_wayland_display="$(environment_value WAYLAND_DISPLAY \
+        <<< "${manager_environment}" || true)"
+
+    if [[ "${manager_desktop}" == "Hyprland" &&
+            -n "${manager_wayland_display}" &&
+            -n "${manager_signature}" &&
+            "${manager_signature}" != "${previous_signature}" ]]; then
+        export WAYLAND_DISPLAY="${manager_wayland_display}"
+        export HYPRLAND_INSTANCE_SIGNATURE="${manager_signature}"
+
+        # Hyprland has now published a fresh instance environment to the user
+        # manager. Synchronize it to D-Bus activation before starting the
+        # target that makes graphical-session.target available to portals.
+        /usr/bin/dbus-update-activation-environment --systemd \
+            WAYLAND_DISPLAY \
+            HYPRLAND_INSTANCE_SIGNATURE \
+            XDG_CURRENT_DESKTOP \
+            XDG_SESSION_DESKTOP \
+            XDG_SESSION_TYPE
+        systemctl --user start "${session_target}"
+        session_started=true
+        systemctl --user is-active --quiet "${session_target}"
+        systemctl --user is-active --quiet graphical-session.target
+        break
+    fi
+
+    sleep 0.1
+done
+
+if [[ "${session_started}" != true ]]; then
+    printf 'error: timed out waiting for Hyprland to publish its Wayland environment\n' >&2
+    kill -TERM "${hyprland_pid}"
+    set +e
+    wait "${hyprland_pid}"
+    set -e
+    exit 1
+fi
+
+set +e
+wait "${hyprland_pid}"
+hyprland_status=$?
+set -e
+hyprland_pid=""
+exit "${hyprland_status}"

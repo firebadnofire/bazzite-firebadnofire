@@ -77,13 +77,54 @@ Hyprland defaults from earlier image revisions are upgraded to the current Lua
 default so corrected bindings reach existing installations. A user-authored
 legacy `hyprland.conf` is preserved and passed explicitly to Hyprland.
 After provisioning those defaults, the image wrapper hands the session to
-Hyprland's supported `/usr/bin/start-hyprland` launcher. Legacy configuration
-arguments are passed after its required `--` separator. The image also installs
+Hyprland's supported `/usr/bin/start-hyprland` launcher and supervises that
+process through logout or an abnormal exit. Legacy configuration arguments are
+passed after its required `--` separator. The image also installs
 `hyprland-guiutils`, which supplies Hyprland's runtime dialogs and emergency
 launcher.
 `just inspect` and Forgejo's **Inspect image contract** step validate the
 shipped `/usr/share/bazzite-firebadnofire/hyprland.lua` with Hyprland's
 `--verify-config` mode.
+
+The wrapper owns one systemd session lifecycle. After Hyprland publishes a
+fresh `WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP=Hyprland`, and
+`HYPRLAND_INSTANCE_SIGNATURE` to the user manager, the wrapper synchronizes the
+same environment to D-Bus activation and starts the image-provided
+`hyprland-session.target`. That target binds to Fedora's unmodified
+`graphical-session.target`, allowing portal services with a graphical-session
+requisite to start without a race. On clean logout, a compositor crash, or
+termination by the display manager, the wrapper stops `hyprland-session.target`.
+Fedora's existing `StopWhenUnneeded=yes` behavior then deactivates
+`graphical-session.target` only if another session target does not still need
+it. Hyprland's optional native target handling is disabled for this wrapper so
+the two lifecycle mechanisms cannot compete.
+
+The image explicitly installs the portal frontend, the Hyprland backend, and
+the GTK backend. `/usr/share/xdg-desktop-portal/hyprland-portals.conf` selects
+Hyprland first for the interfaces it implements and GTK as the fallback, with
+GTK selected explicitly for `FileChooser`. Portal services remain D-Bus
+activated; the launcher does not restart already working portal processes.
+Dolphin remains installed and provides the file-manager integration used by
+applications that reveal a downloaded file.
+
+For an account without `~/.config/user-dirs.dirs`, first Hyprland startup runs
+`xdg-user-dirs-update`, whose Fedora default creates `~/Downloads` and records
+it as `XDG_DOWNLOAD_DIR`. If that configuration file already exists, the
+launcher never invokes the updater, so custom user-directory paths are not
+rewritten.
+
+Older installations that used the temporary per-user target should move it out
+of systemd's search path after installing the corrected image, then reload the
+user manager and log out and back in:
+
+```bash
+mv ~/.config/systemd/user/hyprland-session.target \
+  ~/.config/systemd/user/hyprland-session.target.manual-backup
+systemctl --user daemon-reload
+```
+
+The backup is intentionally retained until the next Hyprland login has been
+tested. Fresh accounts need no per-user unit.
 
 The default session starts:
 
@@ -228,7 +269,7 @@ NVIDIA display behavior, gaming performance, VM boot, or physical hardware.
 
 ### Updating the pinned bases
 
-Treat both digest changes as supply-chain updates:
+Treat every base-image digest change as a supply-chain update:
 
 1. Read the upstream Bazzite or bootc-image-builder release notes.
 2. Inspect the current manifest with Skopeo or another registry client:
@@ -236,11 +277,16 @@ Treat both digest changes as supply-chain updates:
    ```bash
    skopeo inspect docker://ghcr.io/ublue-os/bazzite-nvidia-open:stable
    skopeo inspect docker://quay.io/centos-bootc/bootc-image-builder:latest
+   skopeo inspect --raw docker://quay.io/fedora/fedora-bootc:44 | sha256sum
    ```
 
-3. Update the digest in `Containerfile` or `bazzite-firebadnofire.env` and
-   `.forgejo/workflows/build-disk.yml` together.
-4. Run static validation, a complete OCI build, image inspection, and VM tests.
+3. Update the Bazzite digest in `Containerfile`, the Image Builder digest in
+   `bazzite-firebadnofire.env` and `.forgejo/workflows/build-disk.yml` together,
+   or the Fedora bootc digest in `network-installer/Containerfile`, according to
+   the input being updated.
+4. Run static validation and the complete affected build. For the workstation
+   image, also run image inspection and VM tests; for the network installer,
+   force-pull and build its container before dispatching the ISO workflow.
 5. Review the complete diff before merging to `main`.
 
 ## Forgejo Actions
@@ -760,7 +806,7 @@ must be reviewed before trusting or advertising it. The release namespace is
 `netiso-<12-character-commit>-<12-character-build-time-digest>` and contains
 exactly four files:
 
-- `bazzite-firebadnofire-<release-id>.net.iso`;
+- `bazzite-firebadnofire-<UTC-date>-<release-id>.net.iso`;
 - the matching `.net.iso.sig`;
 - `SHA256SUMS`;
 - `SHA256SUMS.sig`.
@@ -1001,7 +1047,9 @@ In the VM, verify at minimum:
 sudo bootc status
 grep -E '^(NAME|PRETTY_NAME|ID|ID_LIKE)=' /etc/os-release
 systemctl is-enabled libvirtd.service
-rpm -q foot hyprland hyprland-guiutils hyprpaper xdg-desktop-portal-hyprland qemu-kvm virt-manager
+rpm -q dolphin foot hyprland hyprland-guiutils hyprpaper \
+  xdg-desktop-portal xdg-desktop-portal-gtk \
+  xdg-desktop-portal-hyprland xdg-user-dirs qemu-kvm virt-manager
 ```
 
 Then exercise the actual graphical path:
@@ -1014,7 +1062,29 @@ Then exercise the actual graphical path:
 4. Test audio controls, locking/unlocking, the Waybar clipboard picker, full and
    region screenshots, and a PipeWire screen-share portal request.
 5. Launch an XWayland application and a native Wayland application.
-6. Reboot, update, and roll back once before considering hardware installation.
+6. Verify the session and portal lifecycle from a terminal:
+
+   ```bash
+   systemctl --user is-active \
+     hyprland-session.target graphical-session.target \
+     xdg-desktop-portal.service
+   systemctl --user status xdg-desktop-portal-hyprland.service
+   systemctl --user show-environment | \
+     grep -E '^(WAYLAND_DISPLAY|XDG_CURRENT_DESKTOP|HYPRLAND_INSTANCE_SIGNATURE)='
+   test -d "$(xdg-user-dir DOWNLOAD)"
+   grep '^XDG_DOWNLOAD_DIR=' ~/.config/user-dirs.dirs
+   ```
+
+   All three units in the first command must report `active`, and the manager
+   environment must identify the running Hyprland instance.
+7. In Flatpak Firefox, download a file to the reported downloads directory,
+   exercise both open and save file dialogs, and use **Show in Folder** to
+   confirm Dolphin reveals the file.
+8. Log out normally and confirm the display manager returns, then log in again
+   and repeat the unit checks. Also test one controlled abnormal exit from a
+   text console or SSH session and confirm the login manager recovers and the
+   next session activates both targets without manual commands.
+9. Reboot, update, and roll back once before considering hardware installation.
 
 A virtual GPU does not validate NVIDIA acceleration, VRR, HDR, multi-monitor
 behavior, or gaming performance. Those remain physical-hardware tests.

@@ -52,8 +52,9 @@ inspect target=("localhost/" + image_name) tag=default_tag:
       bootc container lint --fatal-warnings
       export XDG_RUNTIME_DIR=/tmp/hyprland-verify
       install -d -m 0700 "${XDG_RUNTIME_DIR}"
-      rpm -q foot hyprland hyprland-guiutils hypridle hyprlock hyprpolkitagent \
-        xdg-desktop-portal-hyprland libvirt-daemon-kvm qemu-kvm \
+      rpm -q dolphin foot hyprland hyprland-guiutils hypridle hyprlock hyprpolkitagent \
+        xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-hyprland \
+        xdg-user-dirs libvirt-daemon-kvm qemu-kvm \
         virt-manager plasma-login-manager bootc
       /usr/libexec/bazzite-firebadnofire-include-packages verify \
         /usr/share/bazzite-firebadnofire/include.txt
@@ -69,12 +70,16 @@ inspect target=("localhost/" + image_name) tag=default_tag:
         --config /usr/share/bazzite-firebadnofire/hyprland.lua
       test -x /usr/bin/looking-glass-client
       test -x /usr/libexec/xdg-desktop-portal-hyprland
+      test -x /usr/libexec/xdg-desktop-portal-gtk
+      test -x /usr/libexec/xdg-desktop-portal
       test -x /usr/libexec/hyprpolkitagent
       test -x /usr/bin/foot
       test -x /usr/bin/start-hyprland
       test -x /usr/bin/hyprland-dialog
       test -x /usr/libexec/bazzite-firebadnofire-start-hyprland
       test -x /usr/libexec/bazzite-firebadnofire-screenshot
+      test -x /usr/bin/xdg-user-dirs-update
+      test -x /usr/bin/dolphin
       test -L /etc/os-release
       test "$(readlink /etc/os-release)" = ../usr/lib/os-release
       grep -Fqx "NAME=\"firebadnofire-bazzite\"" /etc/os-release
@@ -88,6 +93,35 @@ inspect target=("localhost/" + image_name) tag=default_tag:
         /usr/share/wayland-sessions/hyprland.desktop
       grep -qx "DesktopNames=Hyprland" \
         /usr/share/wayland-sessions/hyprland.desktop
+      test -f /usr/lib/systemd/user/hyprland-session.target
+      test -f /usr/lib/systemd/user/graphical-session.target
+      test -f /usr/lib/systemd/user/xdg-desktop-portal.service
+      test -f /usr/lib/systemd/user/xdg-desktop-portal-hyprland.service
+      test -f /usr/lib/systemd/user/plasma-dolphin.service
+      grep -Fqx "BindsTo=graphical-session.target" \
+        /usr/lib/systemd/user/hyprland-session.target
+      grep -Fqx "After=graphical-session-pre.target graphical-session.target" \
+        /usr/lib/systemd/user/hyprland-session.target
+      ! grep -Fq "PropagatesStopTo=graphical-session.target" \
+        /usr/lib/systemd/user/hyprland-session.target
+      grep -Fqx "StopWhenUnneeded=yes" \
+        /usr/lib/systemd/user/graphical-session.target
+      grep -Fqx "Requisite=graphical-session.target" \
+        /usr/lib/systemd/user/xdg-desktop-portal.service
+      grep -Fqx "After=graphical-session.target" \
+        /usr/lib/systemd/user/xdg-desktop-portal.service
+      test -f /usr/share/xdg-desktop-portal/hyprland-portals.conf
+      test -f /usr/share/xdg-desktop-portal/portals/hyprland.portal
+      test -f /usr/share/dbus-1/services/org.kde.dolphin.FileManager1.service
+      grep -Fqx "default=hyprland;gtk" \
+        /usr/share/xdg-desktop-portal/hyprland-portals.conf
+      grep -Fqx "org.freedesktop.impl.portal.FileChooser=gtk" \
+        /usr/share/xdg-desktop-portal/hyprland-portals.conf
+      grep -Fq "org.freedesktop.impl.portal.ScreenCast" \
+        /usr/share/xdg-desktop-portal/portals/hyprland.portal
+      grep -Fqx "Name=org.freedesktop.FileManager1" \
+        /usr/share/dbus-1/services/org.kde.dolphin.FileManager1.service
+      grep -Fqx "DOWNLOAD=Downloads" /etc/xdg/user-dirs.defaults
       test "$(systemctl is-enabled libvirtd.service)" = enabled
       test "$(systemctl is-enabled podman.socket)" = enabled
       test "$(systemctl is-enabled plasmalogin.service)" = enabled

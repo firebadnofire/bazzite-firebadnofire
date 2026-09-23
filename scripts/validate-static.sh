@@ -28,6 +28,7 @@ required_files=(
     scripts/test-oci-publication.sh
     scripts/test-retry-once.sh
     system_files/usr/lib/tmpfiles.d/bazzite-firebadnofire.conf
+    system_files/usr/lib/systemd/user/hyprland-session.target
     system_files/usr/libexec/bazzite-firebadnofire-rotate-wallpaper
     system_files/usr/share/bazzite-firebadnofire/hypridle.conf
     system_files/usr/share/bazzite-firebadnofire/hyprland.lua
@@ -35,6 +36,7 @@ required_files=(
     system_files/usr/share/bazzite-firebadnofire/hyprpaper.conf
     system_files/usr/share/bazzite-firebadnofire/waybar/config.jsonc
     system_files/usr/share/wayland-sessions/hyprland.desktop
+    system_files/usr/share/xdg-desktop-portal/hyprland-portals.conf
 )
 
 for file in "${required_files[@]}"; do
@@ -101,6 +103,7 @@ bash scripts/test-retry-once.sh
 python3 - <<'PY'
 from pathlib import Path
 import json
+import re
 import subprocess
 
 try:
@@ -153,8 +156,14 @@ for managed_hash in (
             f"{managed_hash}"
         )
 for required in (
-    "exec /usr/bin/start-hyprland\n",
-    'exec /usr/bin/start-hyprland -- --config "${legacy_config}"',
+    "hyprland_command=(/usr/bin/start-hyprland)",
+    'hyprland_command=(/usr/bin/start-hyprland -- --config "${legacy_config}")',
+    "export HYPRLAND_NO_SD_TARGET=1",
+    "/usr/bin/dbus-update-activation-environment --systemd",
+    'systemctl --user start "${session_target}"',
+    'systemctl --user stop "${session_target}"',
+    'if [[ ! -e "${config_home}/user-dirs.dirs" ]]',
+    "/usr/bin/xdg-user-dirs-update",
 ):
     if required not in launcher_source:
         raise ValueError(
@@ -163,6 +172,31 @@ for required in (
         )
 if "exec /usr/bin/Hyprland" in launcher_source:
     raise ValueError("Hyprland launcher must not bypass start-hyprland")
+
+session_target_source = Path(
+    "system_files/usr/lib/systemd/user/hyprland-session.target"
+).read_text(encoding="utf-8")
+for required in (
+    "BindsTo=graphical-session.target",
+    "Wants=graphical-session-pre.target",
+    "After=graphical-session-pre.target graphical-session.target",
+):
+    if required not in session_target_source:
+        raise ValueError(f"hyprland-session.target: missing lifecycle contract: {required}")
+if "PropagatesStopTo=graphical-session.target" in session_target_source:
+    raise ValueError(
+        "hyprland-session.target must let StopWhenUnneeded protect other sessions"
+    )
+
+portal_preferences = Path(
+    "system_files/usr/share/xdg-desktop-portal/hyprland-portals.conf"
+).read_text(encoding="utf-8")
+for required in (
+    "default=hyprland;gtk",
+    "org.freedesktop.impl.portal.FileChooser=gtk",
+):
+    if required not in portal_preferences:
+        raise ValueError(f"hyprland-portals.conf: missing backend selection: {required}")
 
 desktop_source = Path(
     "system_files/usr/share/wayland-sessions/hyprland.desktop"
@@ -178,9 +212,14 @@ build_source = Path("build_files/build.sh").read_text(encoding="utf-8")
 for required in (
     "foot",
     "hyprland-guiutils",
+    "xdg-desktop-portal-gtk",
+    "xdg-user-dirs",
     "test -x /usr/bin/foot",
     "test -x /usr/bin/start-hyprland",
     "test -x /usr/bin/hyprland-dialog",
+    "test -x /usr/bin/xdg-user-dirs-update",
+    "test -f /usr/lib/systemd/user/hyprland-session.target",
+    "test -f /usr/share/xdg-desktop-portal/hyprland-portals.conf",
     's/^NAME=.*/NAME="firebadnofire-bazzite"/',
     's/^PRETTY_NAME=.*/PRETTY_NAME="firebadnofire-bazzite"/',
     "grep -Fqx 'ID=bazzite' /etc/os-release",
@@ -199,11 +238,18 @@ for source_name, source_text in contract_sources.items():
     for required in (
         f"test -s {hyprland_default}",
         f"--config {hyprland_default}",
-        "rpm -q foot ",
+        "rpm -q dolphin foot ",
         "hyprland-guiutils",
+        "xdg-desktop-portal-gtk",
+        "xdg-user-dirs",
         "test -x /usr/bin/foot",
         "test -x /usr/bin/start-hyprland",
         "test -x /usr/bin/hyprland-dialog",
+        "test -x /usr/bin/xdg-user-dirs-update",
+        "test -f /usr/lib/systemd/user/hyprland-session.target",
+        "test -f /usr/share/xdg-desktop-portal/hyprland-portals.conf",
+        'grep -Fqx "default=hyprland;gtk"',
+        'grep -Fqx "org.freedesktop.impl.portal.FileChooser=gtk"',
         'test "$(readlink /etc/os-release)" = ../usr/lib/os-release',
         'grep -Fqx "NAME=\\"firebadnofire-bazzite\\"" /etc/os-release',
         'grep -Fqx "PRETTY_NAME=\\"firebadnofire-bazzite\\"" /etc/os-release',
@@ -644,8 +690,15 @@ if "${GITHUB_OUTPUT}" not in needs_diagnostic:
     raise ValueError("diagnose-needs.yml: output producer must use GITHUB_OUTPUT")
 
 installer_containerfile = Path("network-installer/Containerfile").read_text(encoding="utf-8")
+installer_from = installer_containerfile.splitlines()[0]
+if not re.fullmatch(
+    r"FROM quay\.io/fedora/fedora-bootc:44@sha256:[0-9a-f]{64}",
+    installer_from,
+):
+    raise ValueError(
+        "network installer Fedora 44 base must use a complete immutable digest"
+    )
 for required in (
-    "FROM quay.io/fedora/fedora-bootc:44@sha256:",
     "anaconda-core",
     "anaconda-tui",
     "dracut-network",

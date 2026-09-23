@@ -5,9 +5,10 @@ set -Eeuo pipefail
 readonly HYPRLAND_COPR="lionheartp/Hyprland"
 
 desktop_packages=(
-    blueman brightnessctl cliphist foot fuzzel grim network-manager-applet
+    blueman brightnessctl cliphist dolphin foot fuzzel grim network-manager-applet
     pavucontrol playerctl qt5-qtwayland qt6-qtwayland slurp
-    SwayNotificationCenter waybar wl-clipboard xdg-desktop-portal-gtk
+    SwayNotificationCenter waybar wl-clipboard xdg-desktop-portal
+    xdg-desktop-portal-gtk xdg-user-dirs
 )
 
 admin_packages=(
@@ -128,6 +129,7 @@ systemctl enable libvirtd.service podman.socket
 
 # Fail the image build if the user-facing workstation contract is incomplete.
 rpm -q \
+    dolphin \
     foot \
     hyprland \
     hyprland-guiutils \
@@ -139,7 +141,10 @@ rpm -q \
     plasma-login-manager \
     qemu-kvm \
     virt-manager \
-    xdg-desktop-portal-hyprland
+    xdg-desktop-portal \
+    xdg-desktop-portal-gtk \
+    xdg-desktop-portal-hyprland \
+    xdg-user-dirs
 /usr/libexec/bazzite-firebadnofire-include-packages verify \
     /usr/share/bazzite-firebadnofire/include.txt
 test -x /usr/libexec/bazzite-firebadnofire-start-hyprland
@@ -150,7 +155,11 @@ test -x /usr/libexec/bazzite-firebadnofire-screenshot
 test -x /usr/libexec/bazzite-firebadnofire-rotate-wallpaper
 test -x /usr/bin/looking-glass-client
 test -x /usr/libexec/xdg-desktop-portal-hyprland
+test -x /usr/libexec/xdg-desktop-portal-gtk
+test -x /usr/libexec/xdg-desktop-portal
 test -x /usr/libexec/hyprpolkitagent
+test -x /usr/bin/xdg-user-dirs-update
+test -x /usr/bin/dolphin
 test -L /etc/os-release
 test "$(readlink /etc/os-release)" = ../usr/lib/os-release
 grep -Fqx 'NAME="firebadnofire-bazzite"' /etc/os-release
@@ -163,6 +172,14 @@ test -f /usr/share/bazzite-firebadnofire/hypridle.conf
 test -f /usr/share/bazzite-firebadnofire/hyprlock.conf
 test -f /usr/share/bazzite-firebadnofire/hyprpaper.conf
 test -f /usr/share/bazzite-firebadnofire/waybar/config.jsonc
+test -f /usr/lib/systemd/user/hyprland-session.target
+test -f /usr/lib/systemd/user/graphical-session.target
+test -f /usr/lib/systemd/user/xdg-desktop-portal.service
+test -f /usr/lib/systemd/user/xdg-desktop-portal-hyprland.service
+test -f /usr/lib/systemd/user/plasma-dolphin.service
+test -f /usr/share/xdg-desktop-portal/hyprland-portals.conf
+test -f /usr/share/xdg-desktop-portal/portals/hyprland.portal
+test -f /usr/share/dbus-1/services/org.kde.dolphin.FileManager1.service
 test -f /usr/lib/tmpfiles.d/bazzite-firebadnofire.conf
 test -f /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
 grep -Fqx 'prefix = "pubcode.archuser.org/universalblue/bazzite-firebadnofire"' \
@@ -181,6 +198,30 @@ grep -qx 'Exec=/usr/libexec/bazzite-firebadnofire-start-hyprland' \
     /usr/share/wayland-sessions/hyprland.desktop
 grep -qx 'DesktopNames=Hyprland' \
     /usr/share/wayland-sessions/hyprland.desktop
+grep -Fqx 'BindsTo=graphical-session.target' \
+    /usr/lib/systemd/user/hyprland-session.target
+grep -Fqx 'After=graphical-session-pre.target graphical-session.target' \
+    /usr/lib/systemd/user/hyprland-session.target
+if grep -Fq 'PropagatesStopTo=graphical-session.target' \
+        /usr/lib/systemd/user/hyprland-session.target; then
+    printf 'error: Hyprland target must not force-stop another graphical session\n' >&2
+    exit 1
+fi
+grep -Fqx 'StopWhenUnneeded=yes' \
+    /usr/lib/systemd/user/graphical-session.target
+grep -Fqx 'Requisite=graphical-session.target' \
+    /usr/lib/systemd/user/xdg-desktop-portal.service
+grep -Fqx 'After=graphical-session.target' \
+    /usr/lib/systemd/user/xdg-desktop-portal.service
+grep -Fqx 'default=hyprland;gtk' \
+    /usr/share/xdg-desktop-portal/hyprland-portals.conf
+grep -Fqx 'org.freedesktop.impl.portal.FileChooser=gtk' \
+    /usr/share/xdg-desktop-portal/hyprland-portals.conf
+grep -Fq 'org.freedesktop.impl.portal.ScreenCast' \
+    /usr/share/xdg-desktop-portal/portals/hyprland.portal
+grep -Fqx 'Name=org.freedesktop.FileManager1' \
+    /usr/share/dbus-1/services/org.kde.dolphin.FileManager1.service
+grep -Fqx 'DOWNLOAD=Downloads' /etc/xdg/user-dirs.defaults
 test "$(systemctl is-enabled libvirtd.service)" = "enabled"
 test "$(systemctl is-enabled podman.socket)" = "enabled"
 test "$(systemctl is-enabled plasmalogin.service)" = "enabled"

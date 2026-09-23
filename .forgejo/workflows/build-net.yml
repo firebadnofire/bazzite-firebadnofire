@@ -23,6 +23,7 @@ jobs:
       contents: read
     outputs:
       image_digest: ${{ steps.image.outputs.digest }}
+      release_date: ${{ steps.image.outputs.release_date }}
       daemon_id: ${{ steps.image.outputs.daemon_id }}
 
     steps:
@@ -102,10 +103,15 @@ jobs:
             echo "error: selected stable digest is invalid: ${selected_digest}" >&2
             exit 1
           }
-          echo "digest=${selected_digest}" >> "${GITHUB_OUTPUT}"
+          release_date="$(date -u +%F)"
+          [[ "${release_date}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
           daemon_id="$(docker info --format '{{.ID}}')"
           [[ -n "${daemon_id}" ]]
-          echo "daemon_id=${daemon_id}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "digest=${selected_digest}"
+            echo "release_date=${release_date}"
+            echo "daemon_id=${daemon_id}"
+          } >> "${GITHUB_OUTPUT}"
           echo "Network installer snapshot: ${selected_repository}@${selected_digest}"
           echo "The ISO will resolve :stable again after boot."
 
@@ -117,6 +123,7 @@ jobs:
       contents: read
     env:
       IMAGE_DIGEST: ${{ needs.prepare.outputs.image_digest }}
+      RELEASE_DATE: ${{ needs.prepare.outputs.release_date }}
       HANDOFF_DAEMON_ID: ${{ needs.prepare.outputs.daemon_id }}
       HANDOFF_FORMATS: netiso
 
@@ -305,9 +312,10 @@ jobs:
 
           short_sha="${GITHUB_SHA:0:12}"
           digest_hex="${IMAGE_DIGEST#sha256:}"
+          [[ "${RELEASE_DATE}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
           mkdir -p release-input
           install -m 0644 "${iso}" \
-            "release-input/bazzite-firebadnofire-${short_sha}-${digest_hex:0:12}.net.iso"
+            "release-input/bazzite-firebadnofire-${RELEASE_DATE}-${short_sha}-${digest_hex:0:12}.net.iso"
           bash scripts/disk-handoff.sh stage netiso
 
   release:
@@ -319,6 +327,7 @@ jobs:
       contents: write
     env:
       IMAGE_DIGEST: ${{ needs.prepare.outputs.image_digest }}
+      RELEASE_DATE: ${{ needs.prepare.outputs.release_date }}
       HANDOFF_DAEMON_ID: ${{ needs.prepare.outputs.daemon_id }}
       HANDOFF_FORMATS: netiso
 
@@ -389,7 +398,8 @@ jobs:
           short_sha="${GITHUB_SHA:0:12}"
           digest_hex="${IMAGE_DIGEST#sha256:}"
           release_id="${short_sha}-${digest_hex:0:12}"
-          iso="bazzite-firebadnofire-${release_id}.net.iso"
+          [[ "${RELEASE_DATE}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
+          iso="bazzite-firebadnofire-${RELEASE_DATE}-${release_id}.net.iso"
           [[ -s "release/${iso}" ]]
           [[ "$(find release -maxdepth 1 -type f | wc -l)" -eq 1 ]] || {
             echo "error: expected only the unsigned network ISO before checksumming" >&2
