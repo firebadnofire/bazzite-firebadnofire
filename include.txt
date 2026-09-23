@@ -8,3 +8,4 @@ socat
 zsh
 fzf
 gparted
+cronie
