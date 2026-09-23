@@ -6,4 +6,5 @@ nmap
 htop
 socat
 zsh
-fzy
+fzf
+gparted
