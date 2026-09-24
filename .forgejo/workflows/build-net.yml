@@ -293,7 +293,7 @@ jobs:
             grep -Fqx 'location = "ghcr.io/firebadnofire/bazzite-firebadnofire"'
           echo "Verified network-only installer payload and canonical/mirror configuration"
 
-      - name: Report size goals and stage the ISO
+      - name: Report size and stage the ISO
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -302,13 +302,6 @@ jobs:
           [[ "${bytes}" =~ ^[1-9][0-9]*$ ]]
           printf 'Network installer ISO: %s bytes (%s)\n' \
             "${bytes}" "$(numfmt --to=iec-i --suffix=B "${bytes}")"
-          if ((bytes < 536870912)); then
-            echo "Size goal met: below 0.5 GiB"
-          elif ((bytes < 1073741824)); then
-            echo "Preferred ceiling met: below 1 GiB; 0.5 GiB stretch goal was not met"
-          else
-            echo "warning: ISO exceeds the preferred 1 GiB ceiling; inspect package contents before release" >&2
-          fi
 
           short_sha="${GITHUB_SHA:0:12}"
           digest_hex="${IMAGE_DIGEST#sha256:}"

@@ -21,6 +21,14 @@ trap 'echo "error: disk handoff failed at line ${LINENO} (${1:-unknown}); inspec
 repository_hash="$(printf '%s' "${GITHUB_REPOSITORY}" | sha256sum)"
 scope="${repository_hash:0:16}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 digest_hex="${IMAGE_DIGEST#sha256:}"
+release_prefix=""
+if [[ -n "${RELEASE_DATE:-}" ]]; then
+    [[ "${RELEASE_DATE}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || {
+        echo "error: RELEASE_DATE must use YYYY-MM-DD format" >&2
+        exit 2
+    }
+    release_prefix="${RELEASE_DATE}-"
+fi
 read -r -a handoff_formats <<< "${HANDOFF_FORMATS:-qcow2 iso}"
 [[ "${#handoff_formats[@]}" -gt 0 ]]
 for handoff_format in "${handoff_formats[@]}"; do
@@ -41,7 +49,7 @@ select_volume() {
     esac
     volume="disk-handoff-${scope}-${format}"
     helper="${volume}-copy"
-    filename="bazzite-firebadnofire-${GITHUB_SHA:0:12}-${digest_hex:0:12}.${extension}"
+    filename="bazzite-firebadnofire-${release_prefix}${GITHUB_SHA:0:12}-${digest_hex:0:12}.${extension}"
 }
 
 verify_volume() {

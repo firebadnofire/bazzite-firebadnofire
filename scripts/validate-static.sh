@@ -566,6 +566,16 @@ for workflow_name, workflow_text in (
             f"{workflow_name}: bootc-image-builder must not receive the registry reference"
         )
 iso_steps = iso_document["jobs"]["release"]["steps"]
+iso_build_steps = iso_document["jobs"]["iso"]["steps"]
+iso_stage = next(
+    step for step in iso_build_steps
+    if "disk-handoff.sh stage iso" in step.get("run", "")
+)
+if iso_stage.get("env", {}).get("RELEASE_DATE") != \
+        "${{ needs.prepare.outputs.release_date }}":
+    raise ValueError(
+        "build-iso.yml: dated ISO handoff must receive the prepare-job release date"
+    )
 iso_sign = next(
     i for i, step in enumerate(iso_steps)
     if "sign-release-artifacts.sh release sig" in step.get("run", "")
@@ -617,8 +627,8 @@ for required in (
     "installer squashfs contains its own OSTree repository",
     "/LiveOS/squashfs.img",
     "usr/share/anaconda/interactive-defaults.ks",
-    "0.5 GiB",
-    "1 GiB",
+    "Report size and stage the ISO",
+    "Network installer ISO: %s bytes (%s)",
     "bash scripts/sign-release-artifacts.sh release sig",
     "GPG_KEY_B64: ${{ secrets.GPG_KEY_B64 }}",
     "GPG_KEY_PASSWORD: ${{ secrets.GPG_KEY_PASSWORD }}",
@@ -630,6 +640,19 @@ for required in (
 ):
     if required not in net_workflow:
         raise ValueError(f"build-net.yml: missing network-installer contract: {required}")
+for forbidden_size_policy in (
+    "536870912",
+    "1073741824",
+    "0.5 GiB",
+    "1 GiB",
+    "stretch goal",
+    "preferred ceiling",
+):
+    if forbidden_size_policy in net_workflow:
+        raise ValueError(
+            "build-net.yml: network ISO size must be reported, not enforced or classified: "
+            f"{forbidden_size_policy}"
+        )
 for forbidden in ("--bootc-installer-payload-ref", "upload-artifact@", "download-artifact@"):
     if forbidden in net_workflow:
         raise ValueError(f"build-net.yml: forbidden embedded/artifact path: {forbidden}")
@@ -641,6 +664,11 @@ if set(net_document["jobs"]["release"]["needs"]) != {"prepare", "netiso"}:
     raise ValueError("build-net.yml: release must depend on prepare and the network ISO build")
 if "secrets." in yaml.safe_dump(net_document["jobs"]["netiso"]):
     raise ValueError("build-net.yml: privileged network ISO job must not receive secrets")
+if net_document["jobs"]["netiso"].get("env", {}).get("RELEASE_DATE") != \
+        "${{ needs.prepare.outputs.release_date }}":
+    raise ValueError(
+        "build-net.yml: dated network ISO handoff must receive the prepare-job release date"
+    )
 net_release_steps = net_document["jobs"]["release"]["steps"]
 net_collect = next(
     i for i, step in enumerate(net_release_steps)

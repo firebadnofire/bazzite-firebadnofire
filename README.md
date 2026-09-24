@@ -798,11 +798,10 @@ Consequently the signed ISO authenticates the installer bits but does not freeze
 the OS payload selected later. Verify the current OCI digest and its Cosign
 signature before installing when a fixed, auditable payload is required.
 
-The workflow reports the finished ISO byte count and classifies it against a
-0.5 GiB stretch goal and 1 GiB preferred ceiling. These are reported goals, not
-fabricated guarantees: the first hosted build establishes the actual size of
-the pinned Fedora 44/Anaconda inputs. A result above 1 GiB emits a warning and
-must be reviewed before trusting or advertising it. The release namespace is
+The workflow reports the finished ISO byte count for operator visibility but
+does not enforce, warn about, or classify the result against an arbitrary size
+threshold. Artifact integrity and release-backend capacity checks remain
+enforced independently. The release namespace is
 `netiso-<12-character-commit>-<12-character-build-time-digest>` and contains
 exactly four files:
 

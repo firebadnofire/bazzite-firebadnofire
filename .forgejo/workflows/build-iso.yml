@@ -560,6 +560,7 @@ jobs:
         shell: bash
         env:
           IMAGE_DIGEST: ${{ needs.prepare.outputs.image_digest }}
+          RELEASE_DATE: ${{ needs.prepare.outputs.release_date }}
           HANDOFF_DAEMON_ID: ${{ needs.prepare.outputs.daemon_id }}
           HANDOFF_FORMATS: iso
         run: bash scripts/disk-handoff.sh stage iso

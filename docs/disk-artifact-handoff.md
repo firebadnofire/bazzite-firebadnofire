@@ -133,9 +133,10 @@ docker pull "$BIB_IMAGE"
 bash scripts/test-disk-handoff.sh
 ```
 
-The test covers two formats, repeated staging, valid collection, wrong-daemon
-rejection, wrong-attempt rejection, checksum corruption rejection, and repeated
-cleanup. Static success is not a hosted Docker/Forgejo test. Local integration
+The test covers two legacy undated formats, a date-prefixed network ISO,
+repeated staging, valid collection, wrong-daemon rejection, wrong-attempt
+rejection, checksum corruption rejection, and repeated cleanup. Static success
+is not a hosted Docker/Forgejo test. Local integration
 was exercised with real Podman volumes/copies through a Docker-command adapter;
 Docker daemon identity was simulated in that local test.
 

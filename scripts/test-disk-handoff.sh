@@ -66,14 +66,18 @@ cmp "release-input/${prefix}.iso" "release/${prefix}.iso"
 bash "${script}" cleanup
 
 # The network installer uses a distinct handoff format and a .net.iso suffix so
-# it cannot be confused with the offline installer from the same revision.
+# it cannot be confused with the offline installer from the same revision. Its
+# single prepare-job date must survive staging and collection unchanged.
 export GITHUB_RUN_ID="${RANDOM}${RANDOM}"
 export HANDOFF_FORMATS=netiso
+export RELEASE_DATE=2026-09-23
+dated_prefix=bazzite-firebadnofire-${RELEASE_DATE}-111111111111-222222222222
 rm -rf release release-input
 mkdir release-input
-printf 'network iso fixture\n' > "release-input/${prefix}.net.iso"
+printf 'network iso fixture\n' > "release-input/${dated_prefix}.net.iso"
 bash "${script}" stage netiso
 bash "${script}" collect
-cmp "release-input/${prefix}.net.iso" "release/${prefix}.net.iso"
+cmp "release-input/${dated_prefix}.net.iso" "release/${dated_prefix}.net.iso"
 bash "${script}" cleanup
+unset RELEASE_DATE
 echo 'disk handoff integration tests passed'
