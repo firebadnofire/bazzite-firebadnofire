@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -258,13 +259,33 @@ class Host:
             if not proc.name.isdigit() or int(proc.name) == os.getpid():
                 continue
             try:
-                used = any(fd.stat().st_rdev in rdevs for fd in (proc / 'fd').iterdir())
+                used = None
+                for fd in (proc / 'fd').iterdir():
+                    try:
+                        device = fd.stat()
+                        if not stat.S_ISCHR(device.st_mode) or device.st_rdev not in rdevs:
+                            continue
+                        info = (proc / 'fdinfo' / fd.name).read_text()
+                        flags = re.search(r'^flags:\s+([0-7]+)$', info, re.MULTILINE)
+                        if flags is None:
+                            raise Unsafe(f'cannot inspect GPU descriptor flags: {proc.name}/{fd.name}')
+                        # O_PATH pins a filesystem object without opening the driver.
+                        # In particular, PID 1 may retain these for device tracking.
+                        if int(flags[1], 8) & os.O_PATH:
+                            continue
+                        used = fd.name
+                        break
+                    except FileNotFoundError:
+                        # A closed descriptor must not hide another live descriptor.
+                        if fd.exists():
+                            raise Unsafe(f'cannot inspect GPU descriptor: {proc.name}/{fd.name}')
+                        continue
                 if not used:
                     continue
                 cgroup = (proc / 'cgroup').read_text()
                 if allow_graphics and any('/' + scope in cgroup for scope in scopes if scope):
                     continue
-                raise Unsafe(f'GPU device held by PID {proc.name}; stop workload explicitly')
+                raise Unsafe(f'GPU device held by PID {proc.name} (fd {used}); stop workload explicitly')
             except FileNotFoundError:
                 # A process/fd disappearing is normal; final unload verifies no holders remain.
                 continue

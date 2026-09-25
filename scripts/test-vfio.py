@@ -578,6 +578,48 @@ class Backend(unittest.TestCase):
         with self.assertRaises(vfio.Unsafe):
             self.host.gpu_users({'sessions': [], 'service_scopes': []}, allow_graphics=True)
 
+    def gpu_descriptor(self, flags, number='4'):
+        # Real character device, but no GPU access or root privileges required.
+        device = self.root / 'dev/nvidia0'
+        device.parent.mkdir(exist_ok=True)
+        if not device.exists():
+            device.symlink_to('/dev/null')
+        proc = self.root / 'proc/1'
+        (proc / 'fd').mkdir(parents=True, exist_ok=True)
+        (proc / 'fdinfo').mkdir(exist_ok=True)
+        (proc / 'fd' / number).symlink_to('/dev/null')
+        (proc / 'fdinfo' / number).write_text(flags)
+        (proc / 'cgroup').write_text('0::/init.scope\n')
+
+    def test_pid1_metadata_only_gpu_descriptor_is_not_a_workload(self):
+        self.gpu_descriptor(f'flags:\t{os.O_PATH | os.O_CLOEXEC:o}\n')
+        self.host.gpu_users({'sessions': [], 'service_scopes': []})
+
+    def test_pid1_real_gpu_descriptors_remain_blocked(self):
+        for flags in (os.O_RDONLY, os.O_WRONLY, os.O_RDWR):
+            with self.subTest(flags=flags):
+                self.gpu_descriptor(f'flags:\t{flags:o}\n', str(flags + 4))
+                with self.assertRaisesRegex(vfio.Unsafe, r'PID 1 \(fd'):
+                    self.host.gpu_users({'sessions': [], 'service_scopes': []})
+                (self.root / 'proc/1/fd' / str(flags + 4)).unlink()
+
+    def test_metadata_descriptor_does_not_hide_real_gpu_descriptor(self):
+        self.gpu_descriptor(f'flags:\t{os.O_PATH:o}\n')
+        self.gpu_descriptor('flags:\t02\n', '5')
+        with self.assertRaisesRegex(vfio.Unsafe, r'PID 1 \(fd 5\)'):
+            self.host.gpu_users({'sessions': [], 'service_scopes': []})
+
+    def test_unparseable_gpu_descriptor_flags_fail_closed(self):
+        self.gpu_descriptor('flags: unknown\n')
+        with self.assertRaisesRegex(vfio.Unsafe, 'cannot inspect GPU descriptor flags'):
+            self.host.gpu_users({'sessions': [], 'service_scopes': []})
+
+    def test_missing_fdinfo_for_live_gpu_descriptor_fails_closed(self):
+        self.gpu_descriptor('flags:\t02\n')
+        (self.root / 'proc/1/fdinfo/4').unlink()
+        with self.assertRaisesRegex(vfio.Unsafe, 'cannot inspect GPU descriptor'):
+            self.host.gpu_users({'sessions': [], 'service_scopes': []})
+
     def test_console_write_and_readback(self):
         file = self.root / 'sys/class/vtconsole/vtcon0/bind'
         file.parent.mkdir(parents=True)

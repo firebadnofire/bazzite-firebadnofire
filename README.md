@@ -1211,6 +1211,10 @@ shutdown restores the host driver and login screen. Starting a GPU guest ends
 the graphical session. Users must configure managed PCI assignments and the
 machine's firmware/IOMMU prerequisites first.
 
+GPU-holder diagnostics distinguish metadata-only device descriptors from active
+GPU handles, including those owned by PID 1. See the troubleshooting guidance below
+before attempting to stop a reported holder.
+
 Read [single-GPU VFIO setup, activation checks, recovery, and validation](docs/vfio.md)
 before use. After a bootc update and reboot, `sudo vfio-host-check` verifies
 that the running daemon executes the installed adapter.

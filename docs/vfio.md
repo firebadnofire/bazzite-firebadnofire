@@ -103,6 +103,18 @@ For libvirt's filter-capable calls, empty output preserves upstream hook output.
 Prepare/start hooks do not edit VM XML through stdout. No hook calls libvirt APIs
 or `virsh`; doing that can deadlock the daemon.
 
+### GPU holder diagnostics
+
+`GPU device held by PID ... (fd ...)` identifies a real device descriptor that
+blocks preparation. Metadata-only `O_PATH` descriptors are ignored because they
+do not open the device driver; PID 1 is otherwise subject to the same checks as
+all processes. Do not stop PID 1 or bypass the workload check. Inspect the reported
+descriptor with `sudo readlink /proc/PID/fd/FD` and
+`sudo cat /proc/PID/fdinfo/FD`, substituting the reported numbers.
+Older images can incorrectly report metadata-only descriptors as GPU workloads.
+Deploy an image containing the corrected helper through bootc and reboot before
+retrying; changing the stable `/etc` adapter is unnecessary.
+
 ## Inhibition, daemon restarts, and recovery
 
 The inhibitor service acquires a logind **sleep/block** file descriptor and
