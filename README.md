@@ -277,13 +277,24 @@ Treat every base-image digest change as a supply-chain update:
    ```bash
    skopeo inspect docker://ghcr.io/ublue-os/bazzite-nvidia-open:stable
    skopeo inspect docker://quay.io/centos-bootc/bootc-image-builder:latest
-   skopeo inspect --raw docker://quay.io/fedora/fedora-bootc:44 | sha256sum
+   skopeo inspect --format '{{.Digest}}' docker://quay.io/fedora/fedora-bootc:44
    ```
 
 3. Update the Bazzite digest in `Containerfile`, the Image Builder digest in
    `bazzite-firebadnofire.env` and `.forgejo/workflows/build-disk.yml` together,
    or the Fedora bootc digest in `network-installer/Containerfile`, according to
    the input being updated.
+   Verify the Fedora pin by digest against Quay before building (Skopeo requires
+   omitting the tag when a digest is supplied):
+
+   ```bash
+   installer_base="$(awk '/^FROM / {print $2; exit}' network-installer/Containerfile)"
+   skopeo inspect --override-arch amd64 \
+     "docker://${installer_base/:44@/@}"
+   ```
+
+   If Quay returns `manifest unknown`, the pinned manifest is unavailable;
+   resolve and verify a new Fedora 44 digest before updating the pin.
 4. Run static validation and the complete affected build. For the workstation
    image, also run image inspection and VM tests; for the network installer,
    force-pull and build its container before dispatching the ISO workflow.
