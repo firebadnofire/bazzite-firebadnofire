@@ -69,6 +69,11 @@ inspect target=("localhost/" + image_name) tag=default_tag:
       Hyprland --verify-config --i-am-really-stupid \
         --config /usr/share/bazzite-firebadnofire/hyprland.lua
       test -x /usr/bin/looking-glass-client
+      test -x /usr/bin/vfio-host-recover
+      test -x /usr/bin/vfio-host-check
+      /usr/libexec/bazzite-firebadnofire-vfio-run check-deployment
+      test "$(systemctl is-enabled bazzite-firebadnofire-vfio-reconcile.timer)" = enabled
+      test -s /usr/share/licenses/bazzite-firebadnofire-vfio/COPYING
       test -x /usr/libexec/xdg-desktop-portal-hyprland
       test -x /usr/libexec/xdg-desktop-portal-gtk
       test -x /usr/libexec/xdg-desktop-portal
@@ -122,7 +127,7 @@ inspect target=("localhost/" + image_name) tag=default_tag:
       grep -Fqx "Name=org.freedesktop.FileManager1" \
         /usr/share/dbus-1/services/org.kde.dolphin.FileManager1.service
       grep -Fqx "DOWNLOAD=Downloads" /etc/xdg/user-dirs.defaults
-      test "$(systemctl is-enabled libvirtd.service)" = enabled
+      test "$(systemctl is-enabled virtqemud.service)" = enabled
       test "$(systemctl is-enabled podman.socket)" = enabled
       test "$(systemctl is-enabled plasmalogin.service)" = enabled
       test "$(readlink -f /etc/systemd/system/display-manager.service)" = \

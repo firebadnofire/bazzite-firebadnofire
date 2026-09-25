@@ -94,6 +94,18 @@ shellcheck \
     system_files/usr/libexec/bazzite-firebadnofire-screenshot \
     system_files/usr/libexec/bazzite-firebadnofire-start-hyprland
 
+# VFIO tests are entirely mocked: never execute the production Host backend here.
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-vfio.py
+bash -n scripts/test-vfio-container.sh \
+    system_files/etc/libvirt/hooks/qemu.d/90-bazzite-firebadnofire-vfio \
+    system_files/usr/libexec/bazzite-firebadnofire-vfio-run \
+    system_files/usr/bin/vfio-host-recover system_files/usr/bin/vfio-host-check
+shellcheck scripts/test-vfio-container.sh \
+    system_files/etc/libvirt/hooks/qemu.d/90-bazzite-firebadnofire-vfio \
+    system_files/usr/libexec/bazzite-firebadnofire-vfio-run \
+    system_files/usr/bin/vfio-host-recover system_files/usr/bin/vfio-host-check
+cmp system_files/etc/libvirt/hooks/qemu.d/90-bazzite-firebadnofire-vfio \
+    system_files/usr/share/bazzite-firebadnofire/vfio/adapter
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-repo-keys.py
 PYTHONDONTWRITEBYTECODE=1 python3 network-installer/patch-anaconda-progress.py --self-test
 bash scripts/test-include-packages.sh

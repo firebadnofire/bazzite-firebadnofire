@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-only
+[Unit]
+Description=Hold logind sleep inhibitor during single-GPU ownership
+After=systemd-logind.service
+Requires=systemd-logind.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+ExecStart=/usr/libexec/bazzite-firebadnofire-vfio-run inhibit
+Restart=always
+RestartSec=1
+TimeoutStartSec=15
+TimeoutStopSec=10
+UMask=0077

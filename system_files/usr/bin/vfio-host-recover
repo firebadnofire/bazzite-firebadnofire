@@ -1,0 +1,7 @@
+#!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
+case "$*" in
+    '') exec /usr/libexec/bazzite-firebadnofire-vfio-run recover ;;
+    --status) exec /usr/libexec/bazzite-firebadnofire-vfio-run status ;;
+    *) echo 'usage: vfio-host-recover [--status]' >&2; exit 3 ;;
+esac

@@ -1,0 +1,4 @@
+#!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Stable entrypoint ABI; implementation changes with the bootc deployment.
+exec /usr/bin/python3 -I /usr/libexec/bazzite-firebadnofire-vfio/v1/vfio.py "$@"

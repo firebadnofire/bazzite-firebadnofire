@@ -1,0 +1,22 @@
+Single-GPU VFIO handoff for bazzite-firebadnofire
+
+Derived handoff sequence and sleep-inhibition concept:
+https://gitlab.com/risingprismtv/single-gpu-passthrough
+Upstream revision: fa22cf6c0a5f5aba0c2fbb8c888a6821ad7154d3
+Guide: https://gitlab.com/risingprismtv/single-gpu-passthrough/-/wikis/home
+
+Upstream credits:
+Lily (PixelQubed): editing the scripts
+RisingPrism (spelled RisingPrisum in upstream headers): original scripts
+Void, .Chris., WORMS, and the VFIO community: testing and assistance
+Upstream console binding reference: Linux kernel fbcon documentation
+
+2026 modifications by the bazzite-firebadnofire contributors:
+Reimplemented as a NVIDIA-only transactional Python helper, stable libvirt
+adapter, UUID ownership journal, guarded recovery, and verified logind inhibitor.
+Added bootc image integration, lifecycle/deployment tests, and documentation.
+
+The VFIO helpers, adapter, units, and corresponding tests are distributed under
+GPL-3.0-only; see COPYING in this directory. Their source is shipped in the
+image under /usr/libexec/bazzite-firebadnofire-vfio and in the image source
+repository. This attribution does not relicense unrelated repository files.
