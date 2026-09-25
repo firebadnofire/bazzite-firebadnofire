@@ -2,5 +2,5 @@ label: "Bazzite-FBNF-Net"
 grub2:
   entries:
     - name: "Install bazzite-firebadnofire (network required)"
-      linux: "/images/pxeboot/vmlinuz inst.stage2=hd:LABEL=Bazzite-FBNF-Net inst.text ip=dhcp enforcing=0 rd.plymouth=0 plymouth.enable=0"
+      linux: "/images/pxeboot/vmlinuz inst.stage2=hd:LABEL=Bazzite-FBNF-Net inst.text systemd.unit=anaconda.target console=ttyS0,115200n8 console=tty0 ip=dhcp enforcing=0 rd.plymouth=0 plymouth.enable=0"
       initrd: "/images/pxeboot/initrd.img"

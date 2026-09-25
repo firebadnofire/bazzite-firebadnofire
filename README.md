@@ -781,6 +781,25 @@ installer services that request modules after the live-root transition, and it
 includes `tmux` explicitly because weak dependencies are disabled while the
 interactive Anaconda text service requires it. Plymouth is disabled on the
 installer kernel command line so it cannot hold the deliberately text-only UI.
+The boot command explicitly selects `anaconda.target`. Its text UI is attached
+to both the VGA console (`tty1`) and the first serial port (`ttyS0`), with
+kernel messages on both and a recovery shell already running on `tty2`
+(`Ctrl+Alt+F2`; return with `Ctrl+Alt+F1`). The serial port shares the same
+Anaconda tmux session; it does not start a second installer. A serial login
+getty is masked to prevent it competing for that terminal.
+
+For libvirt, configure a serial device with a PTY backend and a console with
+target type `serial`, port `0`, then attach with
+`virsh -c qemu:///system console VM_NAME` (exit with `Ctrl+]`). A host PTY alone
+does not activate a guest console. The ISO configures 115200 baud, 8N1; a
+virtio console (`hvc0`) is a different device. Inside the installer tmux
+session, `Alt+Tab` cycles through the installer, shell, and log windows.
+If the UI still fails, use the recovery shell to inspect
+`systemctl --failed`, `journalctl -b -u anaconda.service -u anaconda-tmux@tty1.service -u anaconda-tmux@ttyS0.service`,
+and `/tmp/anaconda.log`. Rebuild the network ISO to include these changes;
+previously downloaded ISOs are unaffected. Static validation does not prove
+boot success; verify both VGA and serial interaction on the rebuilt media.
+
 The live installer loads SELinux policy in permissive mode, matching Anaconda's
 documented installer-runtime behavior. This does not disable SELinux in the
 downloaded and installed workstation image, whose own policy remains enforcing.

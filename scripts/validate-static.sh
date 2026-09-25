@@ -752,6 +752,9 @@ for required in (
     "network-installer/interactive-defaults.ks /usr/share/anaconda/interactive-defaults.ks",
     "network-installer/patch-anaconda-progress.py /usr/libexec/patch-anaconda-progress",
     "python /usr/libexec/patch-anaconda-progress",
+    "anaconda.target.wants/anaconda-tmux@${tty}.service",
+    "anaconda.target.wants/anaconda-shell@tty2.service",
+    "ln -sfn /dev/null /etc/systemd/system/serial-getty@ttyS0.service",
 ):
     if required not in installer_containerfile:
         raise ValueError(f"network installer Containerfile is missing: {required}")
@@ -759,6 +762,8 @@ installer_iso = Path("network-installer/iso.yaml").read_text(encoding="utf-8")
 for required in (
     "enforcing=0",
     "rd.plymouth=0 plymouth.enable=0",
+    "systemd.unit=anaconda.target",
+    "console=ttyS0,115200n8 console=tty0",
 ):
     if required not in installer_iso:
         raise ValueError(f"network installer ISO configuration is missing: {required}")

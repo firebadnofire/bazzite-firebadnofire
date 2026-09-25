@@ -39,6 +39,8 @@ COPY system_files/etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirr
 # squashfs does not duplicate it. Keep the module tree available after the
 # switch-root, when installer services can still request additional modules.
 # The installer is English-only.
+# Attach tmux explicitly: anaconda.service starts only the background session.
+# Serial PTYs also need an active guest-side terminal service.
 RUN set -Eeuo pipefail; \
     python /usr/libexec/patch-anaconda-progress; \
     rm -f /usr/libexec/patch-anaconda-progress; \
@@ -51,6 +53,14 @@ RUN set -Eeuo pipefail; \
     mv /usr/share/anaconda/list-harddrives-stub /usr/bin/list-harddrives; \
     mv /etc/yum.repos.d /etc/anaconda.repos.d; \
     ln -sfn /usr/lib/systemd/system/anaconda.target /etc/systemd/system/default.target; \
+    install -d -m 0755 /etc/systemd/system/anaconda.target.wants; \
+    for tty in tty1 ttyS0; do \
+        ln -sfn /usr/lib/systemd/system/anaconda-tmux@.service \
+            "/etc/systemd/system/anaconda.target.wants/anaconda-tmux@${tty}.service"; \
+    done; \
+    ln -sfn /usr/lib/systemd/system/anaconda-shell@.service \
+        /etc/systemd/system/anaconda.target.wants/anaconda-shell@tty2.service; \
+    ln -sfn /dev/null /etc/systemd/system/serial-getty@ttyS0.service; \
     rm -f /usr/lib/systemd/system-generators/systemd-gpt-auto-generator; \
     ln -sfn /usr/lib/systemd/system/anaconda-shell@.service \
         /usr/lib/systemd/system/autovt@.service; \
@@ -82,6 +92,11 @@ RUN set -Eeuo pipefail; \
     command -v podman; \
     command -v python; \
     command -v xorriso; \
+    test -s /usr/lib/systemd/system/anaconda-tmux@.service; \
+    test -s /usr/lib/systemd/system/anaconda-shell@.service; \
+    for tty in tty1 ttyS0; do \
+        test -s "/etc/systemd/system/anaconda.target.wants/anaconda-tmux@${tty}.service"; \
+    done; \
     bootc --help >/dev/null; \
     test ! -e /sysroot/ostree/repo; \
     test -s /usr/share/anaconda/interactive-defaults.ks
