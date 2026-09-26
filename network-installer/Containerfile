@@ -13,6 +13,7 @@ RUN dnf5 -y --setopt=install_weak_deps=False install \
         glibc-langpack-en \
         grub2-efi-x64-cdboot \
         isomd5sum \
+        libblockdev-plugins-all \
         net-tools \
         plymouth \
         squashfs-tools \
@@ -84,6 +85,7 @@ RUN set -Eeuo pipefail; \
         /var/log/* \
         /var/tmp/*; \
     python -c 'import locale; locale.setlocale(locale.LC_ALL, "en_US.UTF-8")'; \
+    python -c 'import blivet; assert not blivet.missing_plugs, f"Missing storage plugins: {blivet.missing_plugs}"'; \
     command -v anaconda; \
     command -v bootc; \
     command -v grub2-mkimage; \

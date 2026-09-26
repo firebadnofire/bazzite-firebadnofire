@@ -792,6 +792,19 @@ installer services that request modules after the live-root transition, and it
 includes `tmux` explicitly because weak dependencies are disabled while the
 interactive Anaconda text service requires it. Plymouth is disabled on the
 installer kernel command line so it cannot hold the deliberately text-only UI.
+The installer explicitly includes `libblockdev-plugins-all`, as recommended by
+[Blivet upstream](https://github.com/storaged-project/blivet#installation),
+because disabling weak dependencies otherwise omits storage plugins. The build
+imports Blivet and fails if any of its requested plugins cannot load. Without
+the LVM plugin, Blivet's device scan raises a `TypeError` and Anaconda reports
+no disks even when `lsblk` sees both SATA and VirtIO devices.
+
+A libvirt test of the September 26 `042bb6c4c088` ISO reproduced that failure
+with disposable 25 GiB SATA and 24 GiB VirtIO disks. Installing the plugin
+bundle in the live environment and restarting Anaconda made both disks appear
+in Installation Destination. No installation or formatting was performed;
+the corrected build still needs a fresh ISO boot test.
+
 It also explicitly installs `glibc-langpack-en` and preserves `/usr/lib/locale`:
 Anaconda's D-Bus modules require `en_US.UTF-8`, even in text mode. The build
 checks that Python can activate that locale after cleanup. Keeping only
@@ -1238,7 +1251,10 @@ Users must configure managed PCI assignments and the machine's firmware/IOMMU
 prerequisites first.
 
 Read [single-GPU VFIO setup, activation checks, recovery, and validation](docs/vfio.md)
-before use. After a bootc update and reboot, `sudo vfio-host-check` verifies
+before use. If an older installed helper still reports `GPU device held by PID`,
+`sudo bash scripts/vfio-live-hotfix.sh` temporarily activates the corrected checkout
+helper until reboot, without restarting libvirt. Deploy the updated image for the
+permanent fix. After a bootc update and reboot, `sudo vfio-host-check` verifies
 that the running daemon executes the installed adapter.
 `sudo vfio-host-recover --status` inspects ownership; `sudo vfio-host-recover` performs guarded recovery.
 Locally modified `/etc` hooks are preserved and may require reconciliation.

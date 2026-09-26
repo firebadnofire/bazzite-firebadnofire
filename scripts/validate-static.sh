@@ -743,6 +743,8 @@ for required in (
     "anaconda-tui",
     "dracut-network",
     "glibc-langpack-en",
+    "libblockdev-plugins-all",
+    "assert not blivet.missing_plugs",
     'locale.setlocale(locale.LC_ALL, "en_US.UTF-8")',
     "tmux",
     "'qemu-user-static*'",

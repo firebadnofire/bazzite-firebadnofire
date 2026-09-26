@@ -114,7 +114,13 @@ or `virsh`; doing that can deadlock the daemon.
 An error such as `GPU device held by PID 1 (fd ...)` comes from an older helper.
 The current startup path has no NVIDIA process-holder veto. Deploy an image
 containing the updated helper through bootc and reboot before retrying; changing
-the stable `/etc` adapter is unnecessary. Module unload errors still matter:
+the stable `/etc` adapter is unnecessary. For a temporary fix on the current
+boot, run `sudo bash scripts/vfio-live-hotfix.sh` from the updated checkout.
+This installs a root-owned runtime copy over the installed helper using a bind
+mount, preserves its SELinux label, and refuses outstanding VFIO ownership or
+recovery claims. It does not restart libvirt or start a guest. The override
+vanishes on reboot; an updated bootc deployment is still required permanently.
+Module unload errors still matter:
 inspect the journal for the failed operation and recovery status.
 
 ## Inhibition, daemon restarts, and recovery
