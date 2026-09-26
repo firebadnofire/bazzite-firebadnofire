@@ -213,7 +213,7 @@ jobs:
             grep -Fqx "ID=bazzite" /etc/os-release
             grep -Fqx "ID_LIKE=\"fedora\"" /etc/os-release
             [[ "$(grep -c '^IMAGE_BUILD_DATE=' /usr/lib/os-release)" == 1 ]]
-            grep -Eq '^IMAGE_BUILD_DATE=[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$' /usr/lib/os-release
+            grep -Eq '^IMAGE_BUILD_DATE=[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$' /usr/lib/os-release
             grep -Fqx "IMAGE_BUILD_DATE=${IMAGE_BUILD_DATE}" /usr/lib/os-release
             test -f /usr/share/wayland-sessions/hyprland.desktop
             grep -qx "Exec=/usr/libexec/bazzite-firebadnofire-start-hyprland" \
