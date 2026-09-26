@@ -775,7 +775,7 @@ kickstart = Path("network-installer/interactive-defaults.ks").read_text(encoding
 for required in (
     "text",
     "network --bootproto=dhcp --device=link --activate --onboot=on",
-    "bootc --source-imgref registry:pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable",
+    "bootc --source-imgref registry:ghcr.io/firebadnofire/bazzite-firebadnofire:stable",
     "--target-imgref pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable",
 ):
     if required not in kickstart:

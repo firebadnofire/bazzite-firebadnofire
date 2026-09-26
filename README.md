@@ -768,11 +768,11 @@ Kickstart and mirror configuration before release.
 The installer is text-mode and interactive so booting the media does not
 silently select or erase a disk. It activates DHCP, then Anaconda resolves and
 pulls the then-current
-`pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable` logical stream
-only after boot. The repository-scoped containers/image configuration pulls
-from synchronized
-`ghcr.io/firebadnofire/bazzite-firebadnofire:stable` first and falls back to
-Pubcode.
+`ghcr.io/firebadnofire/bazzite-firebadnofire:stable` source directly only after
+boot, while bootc records
+`pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable` as the update
+identity. Subsequent pulls of that identity try GHCR first through the
+repository-scoped containers/image configuration, then fall back to Pubcode.
 Installation therefore requires working network link, DHCP, DNS, trusted CA
 time/state, and outbound HTTPS to at least one endpoint. There is no offline
 fallback in this ISO.
@@ -1193,7 +1193,7 @@ sudo bootc status
 
 The shipped repository-scoped registry configuration preserves
 `pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable` as the origin
-shown by bootc. Pulls transparently rewrite the same repository/tag or digest to
+shown by bootc. Pulls try
 `ghcr.io/firebadnofire/bazzite-firebadnofire` first, then fall back to Pubcode
 if GHCR is unavailable. Keep the two `stable` tags synchronized; the
 network-installer workflow fails before building when both are reachable and

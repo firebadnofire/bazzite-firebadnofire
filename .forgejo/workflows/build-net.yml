@@ -278,7 +278,7 @@ jobs:
           unsquashfs -cat "${inspection}/squashfs.img" \
             usr/share/anaconda/interactive-defaults.ks > "${inspection}/installer.ks"
           grep -Fqx \
-            'bootc --source-imgref registry:pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable --target-imgref pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable' \
+            'bootc --source-imgref registry:ghcr.io/firebadnofire/bazzite-firebadnofire:stable --target-imgref pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable' \
             "${inspection}/installer.ks"
           unsquashfs -cat "${inspection}/squashfs.img" \
             etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf \
