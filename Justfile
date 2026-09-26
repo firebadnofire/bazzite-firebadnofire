@@ -30,6 +30,7 @@ build target=("localhost/" + image_name) tag=default_tag:
     {{ engine }} build \
       --pull \
       --platform linux/amd64 \
+      --build-arg "IMAGE_BUILD_DATE=${created}" \
       --label "org.opencontainers.image.created=${created}" \
       --label "org.opencontainers.image.description={{ image_desc }}" \
       --label "org.opencontainers.image.documentation={{ repo_url }}" \

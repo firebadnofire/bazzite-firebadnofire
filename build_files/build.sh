@@ -2,6 +2,13 @@
 
 set -Eeuo pipefail
 
+: "${IMAGE_BUILD_DATE:?IMAGE_BUILD_DATE build argument is required}"
+if [[ ! "${IMAGE_BUILD_DATE}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
+    [[ "$(date --utc --date="${IMAGE_BUILD_DATE}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" != "${IMAGE_BUILD_DATE}" ]]; then
+    echo "error: IMAGE_BUILD_DATE must be a valid YYYY-MM-DDTHH:MM:SSZ timestamp" >&2
+    exit 1
+fi
+
 readonly HYPRLAND_COPR="lionheartp/Hyprland"
 
 desktop_packages=(
@@ -110,6 +117,14 @@ sed -i \
     -e 's/^NAME=.*/NAME="firebadnofire-bazzite"/' \
     -e 's/^PRETTY_NAME=.*/PRETTY_NAME="firebadnofire-bazzite"/' \
     /usr/lib/os-release
+
+# Keep the complete upstream os-release metadata while replacing any existing
+# build-date field with the timestamp supplied by the CI invocation.
+os_release_tmp="$(mktemp /usr/lib/os-release.XXXXXX)"
+awk '!/^IMAGE_BUILD_DATE=/' /usr/lib/os-release > "${os_release_tmp}"
+printf 'IMAGE_BUILD_DATE=%s\n' "${IMAGE_BUILD_DATE}" >> "${os_release_tmp}"
+cat "${os_release_tmp}" > /usr/lib/os-release
+rm -f "${os_release_tmp}"
 
 chmod 0755 \
     /usr/libexec/bazzite-firebadnofire-rotate-wallpaper \
