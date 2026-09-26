@@ -1244,7 +1244,8 @@ The image ships single-GPU NVIDIA handoff for system-libvirt guests named with
 an exact, case-sensitive `-gpu` suffix. Only one such guest can own the GPU;
 shutdown restores the host driver and login screen. Starting a GPU guest ends
 the graphical session and stops its systemd user manager, including Flatpak apps,
-portals, and that user's background jobs. There is no NVIDIA process-holder veto
+portals, and that user's background jobs. Abandoned graphical session scopes are
+forcibly terminated and checked for completion. There is no NVIDIA process-holder veto
 for PID 1, graphical apps, or compute jobs. Driver unload and PCI handoff must
 still succeed; otherwise preparation rolls back. The old session is not reopened.
 Users must configure managed PCI assignments and the machine's firmware/IOMMU

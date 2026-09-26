@@ -585,6 +585,35 @@ class Backend(unittest.TestCase):
         (proc / '4').symlink_to('/var/log/vfio.log')
         self.host.no_vfio_users()
 
+    def test_abandoned_session_is_killed_even_when_logind_retains_record(self):
+        self.host.sessions = lambda: [{'id': '2', 'scope': 'session-2.scope'}]
+        calls = []
+        def command(*args, **kwargs):
+            calls.append(args)
+            if args[1] == 'show':
+                return 'inactive' if any(c[1] == 'kill' for c in calls) else 'active'
+            return ''
+        self.host.command = command
+        self.host.apply({'kind': 'session', 'value': '2'})
+        self.assertIn(('systemctl', 'kill', '--signal=SIGKILL', '--kill-whom=all',
+                       'session-2.scope'), calls)
+        self.assertEqual(len(self.host.sessions()), 1)
+
+    def test_session_already_stopped_does_not_need_kill(self):
+        self.host.sessions = lambda: [{'id': '2', 'scope': 'session-2.scope'}]
+        calls = []
+        self.host.command = lambda *args, **kwargs: calls.append(args) or 'inactive'
+        self.host.apply({'kind': 'session', 'value': '2'})
+        self.assertFalse(any(c[1] == 'kill' for c in calls))
+
+    def test_stubborn_session_scope_fails_preparation(self):
+        self.host.sessions = lambda: [{'id': '2', 'scope': 'session-2.scope'}]
+        self.host.command = lambda *args, **kwargs: 'active'
+        wait = self.host.wait
+        self.host.wait = lambda predicate, message: wait(predicate, message, seconds=0)
+        with self.assertRaisesRegex(vfio.Failure, 'session-2.scope did not stop'):
+            self.host.apply({'kind': 'session', 'value': '2'})
+
     def test_user_manager_stopped_and_not_resurrected(self):
         calls = []
         self.host.command = lambda *args, **kwargs: calls.append(args) or 'inactive'

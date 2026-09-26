@@ -14,6 +14,8 @@ locked desktop. Save work first. Startup does not inspect NVIDIA GPU holders or
 veto PID 1, graphical applications, or compute workloads. It stops the display
 manager, ends local graphical sessions, and stops their systemd user managers
 (including Flatpak applications, portals, and background jobs for those users).
+Abandoned graphical session scopes are explicitly killed and verified inactive;
+logind may retain a closing session record after its processes exit.
 Ended sessions and user managers are not restarted during restoration; the next
 login starts a fresh user manager. Other users' sessions are not explicitly ended.
 Driver unload and PCI binding operations must still succeed; failures roll back

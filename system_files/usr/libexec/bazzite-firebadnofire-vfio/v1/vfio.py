@@ -342,8 +342,25 @@ class Host:
                                           '--value') in ('inactive', 'failed'),
                       f"desktop unit {value['unit']} did not stop")
         elif kind == 'session':
+            session = next((s for s in self.sessions() if s['id'] == value), None)
+            if session is None:
+                return
+            scope = session['scope']
+            if not re.fullmatch(r'session-[A-Za-z0-9_]+\.scope', scope):
+                raise Unsafe('invalid graphical session scope')
+            def stopped():
+                return self.command('systemctl', 'show', scope, '-p', 'ActiveState',
+                                    '--value') in ('inactive', 'failed')
             self.command('loginctl', 'terminate-session', value)
-            self.wait(lambda: value not in [s['id'] for s in self.sessions()], 'graphical session did not end')
+            # A previously released session can remain abandoned: logind's
+            # termination request alone need not finish its surviving scope.
+            if not stopped():
+                try:
+                    self.command('systemctl', 'kill', '--signal=SIGKILL', '--kill-whom=all', scope)
+                except Failure:
+                    if not stopped():
+                        raise
+            self.wait(stopped, f'graphical session scope {scope} did not stop')
         elif kind == 'console':
             Path(value).write_text('0')
             self.wait(lambda: Path(value).read_text().strip() == '0', 'console did not unbind')
