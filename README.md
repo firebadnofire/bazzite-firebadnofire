@@ -792,6 +792,11 @@ installer services that request modules after the live-root transition, and it
 includes `tmux` explicitly because weak dependencies are disabled while the
 interactive Anaconda text service requires it. Plymouth is disabled on the
 installer kernel command line so it cannot hold the deliberately text-only UI.
+It also explicitly installs `glibc-langpack-en` and preserves `/usr/lib/locale`:
+Anaconda's D-Bus modules require `en_US.UTF-8`, even in text mode. The build
+checks that Python can activate that locale after cleanup. Keeping only
+`C.utf8` causes the installer to exit with `locale.Error: unsupported locale
+setting` before displaying its menu.
 The boot command explicitly selects `anaconda.target`. Its text UI is attached
 to both the VGA console (`tty1`) and the first serial port (`ttyS0`), with
 kernel messages on both and a recovery shell already running on `tty2`
@@ -810,6 +815,12 @@ If the UI still fails, use the recovery shell to inspect
 and `/tmp/anaconda.log`. Rebuild the network ISO to include these changes;
 previously downloaded ISOs are unaffected. Static validation does not prove
 boot success; verify both VGA and serial interaction on the rebuilt media.
+
+A libvirt BIOS boot test of the September 25 `f20efba74425` network ISO
+confirmed working serial input/output and reproduced that missing-locale
+failure. Restoring locale data in the live test VM allowed Anaconda to reach
+its interactive menu. This was a diskless startup test, not a completed
+installation; the locale build correction still needs a rebuilt-ISO test.
 
 The live installer loads SELinux policy in permissive mode, matching Anaconda's
 documented installer-runtime behavior. This does not disable SELinux in the
@@ -1219,7 +1230,10 @@ privileged local policy decision; do not apply it indiscriminately.
 The image ships single-GPU NVIDIA handoff for system-libvirt guests named with
 an exact, case-sensitive `-gpu` suffix. Only one such guest can own the GPU;
 shutdown restores the host driver and login screen. Starting a GPU guest ends
-the graphical session. Users must configure managed PCI assignments and the
+the graphical session, including GPU desktop apps managed outside the login
+session by systemd (such as Flatpak browsers and Vesktop). Mixed graphics/compute
+desktop apps are closed; unrelated compute-only jobs still block handoff.
+Users must configure managed PCI assignments and the
 machine's firmware/IOMMU prerequisites first.
 
 GPU-holder diagnostics distinguish metadata-only device descriptors from active

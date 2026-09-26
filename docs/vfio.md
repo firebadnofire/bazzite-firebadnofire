@@ -11,7 +11,16 @@ Starting a GPU guest **ends the local graphical session and its applications**.
 Shutdown restores the recorded GPU/driver resources and returns to the login
 screen if the display manager was originally active. It does not preserve a
 locked desktop. Save work first. An unrelated compute workload causes handoff
-to fail; the scripts do not kill it. Other PCI passthrough workloads may prevent
+to fail; the scripts do not kill it. Desktop applications reported by NVIDIA as
+`G` or `C+G` are eligible for teardown when they belong to the local graphical
+session or its systemd user application units. `C+G` alone does not establish
+an unrelated compute workload (for example, Electron applications can use both).
+The helper journals and stops those GPU application units and graphical
+`session.slice` GPU services before ending the login session, then verifies that
+no GPU handles remain before unloading modules. It does not stop the whole user
+manager or restart ended applications. Unknown holders and compute-only jobs
+still block preparation. See [NVIDIA process types](https://docs.nvidia.com/deploy/nvidia-smi/).
+Other PCI passthrough workloads may prevent
 recovery: open VFIO/iommufd handles are deliberately treated conservatively.
 
 ## Deployment and prerequisites

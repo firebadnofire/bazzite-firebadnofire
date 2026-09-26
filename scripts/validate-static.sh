@@ -742,6 +742,8 @@ for required in (
     "anaconda-core",
     "anaconda-tui",
     "dracut-network",
+    "glibc-langpack-en",
+    'locale.setlocale(locale.LC_ALL, "en_US.UTF-8")',
     "tmux",
     "'qemu-user-static*'",
     "/usr/lib/firmware",

@@ -150,6 +150,10 @@ class Store:
                     continue
                 if kind == 'frame' and value in snap['frames'] and value['driver'] in ('efi-framebuffer', 'simple-framebuffer') and re.fullmatch(r'[A-Za-z0-9_.:-]+', value['device']):
                     continue
+                if (kind == 'desktop-unit' and value in snap.get('desktop_units', [])
+                        and re.fullmatch(r'[0-9]+', value['uid'])
+                        and re.fullmatch(r'[A-Za-z0-9_@.\\:-]+\.(service|scope)', value['unit'])):
+                    continue
                 if kind == 'session' and value in [x['id'] for x in snap['sessions']]:
                     continue
                 raise ValueError('invalid action journal')
@@ -239,17 +243,49 @@ class Host:
         for line in self.command('loginctl', 'list-sessions', '--no-legend', '--no-pager').splitlines():
             ident = line.split()[0]
             props = dict(line.split('=', 1) for line in self.command(
-                'loginctl', 'show-session', ident, '-p', 'Type', '-p', 'Remote', '-p', 'Scope').splitlines())
+                'loginctl', 'show-session', ident, '-p', 'Type', '-p', 'Remote', '-p', 'Scope', '-p', 'User').splitlines())
             if props.get('Type') in ('x11', 'wayland') and props.get('Remote') == 'no':
-                answer.append({'id': ident, 'scope': props['Scope']})
+                answer.append({'id': ident, 'scope': props['Scope'], 'uid': str(int(props['User']))})
         return answer
 
+    def desktop_unit(self, snapshot, cgroup):
+        # User-managed desktop apps live outside logind's session scope.
+        for session in snapshot['sessions']:
+            uid = session.get('uid')
+            if uid is None:
+                continue
+            prefix = f'/user.slice/user-{uid}.slice/user@{uid}.service/'
+            for line in cgroup.splitlines():
+                path = line.split(':', 2)[-1]
+                if not path.startswith(prefix):
+                    continue
+                parts = path[len(prefix):].split('/')
+                if (len(parts) >= 2 and parts[0] in ('app.slice', 'session.slice')
+                        and re.fullmatch(r'[A-Za-z0-9_@.\\:-]+\.(service|scope)', parts[1])):
+                    return {'uid': uid, 'unit': parts[1]}, parts[0]
+        return None, None
+
     def gpu_users(self, snapshot, allow_graphics=False):
-        """Fail closed on unreadable /proc. NVIDIA compute query catches CUDA in a desktop scope."""
+        """Allow recorded desktop teardown, but never unrelated compute users."""
         if allow_graphics:
-            compute = self.command('nvidia-smi', '--query-compute-apps=pid', '--format=csv,noheader,nounits')
-            if compute.strip():
-                raise Unsafe('GPU has compute workloads; stop them explicitly before handoff')
+            try:
+                report = ET.fromstring(self.command('nvidia-smi', '-q', '-x'))
+            except ET.ParseError as exc:
+                raise Unsafe('cannot classify NVIDIA GPU users') from exc
+            if report.tag != 'nvidia_smi_log' or report.find('gpu/processes') is None:
+                raise Unsafe('missing NVIDIA GPU process report')
+            snapshot['desktop_units'] = []
+            for entry in report.findall('gpu/processes/process_info'):
+                pid, kind = entry.findtext('pid', ''), entry.findtext('type', '')
+                if not pid.isdigit() or kind not in ('G', 'C+G'):
+                    raise Unsafe(f'GPU has compute or unclassified workload PID {pid}; stop it explicitly')
+                try:
+                    cgroup = (Path('/proc') / pid / 'cgroup').read_text()
+                except FileNotFoundError:
+                    continue
+                unit, _ = self.desktop_unit(snapshot, cgroup)
+                if unit and unit not in snapshot['desktop_units']:
+                    snapshot['desktop_units'].append(unit)
         nodes = list(Path('/dev').glob('nvidia*')) + list(Path('/dev/nvidia-caps').glob('*'))
         nodes += list(Path('/dev/dri').glob('*'))
         rdevs = {p.stat().st_rdev for p in nodes if p.is_char_device()}
@@ -283,8 +319,15 @@ class Host:
                 if not used:
                     continue
                 cgroup = (proc / 'cgroup').read_text()
-                if allow_graphics and any('/' + scope in cgroup for scope in scopes if scope):
-                    continue
+                if allow_graphics:
+                    paths = [line.split(':', 2)[-1].split('/') for line in cgroup.splitlines()]
+                    if any(scope in path for scope in scopes if scope for path in paths):
+                        continue
+                    unit, slice_name = self.desktop_unit(snapshot, cgroup)
+                    if unit and (unit in snapshot['desktop_units'] or slice_name == 'session.slice'):
+                        if unit not in snapshot['desktop_units']:
+                            snapshot['desktop_units'].append(unit)
+                        continue
                 raise Unsafe(f'GPU device held by PID {proc.name} (fd {used}); stop workload explicitly')
             except FileNotFoundError:
                 # A process/fd disappearing is normal; final unload verifies no holders remain.
@@ -370,6 +413,12 @@ class Host:
         if kind == 'service':
             self.command('systemctl', 'stop', value)
             self.wait(lambda: not self.active(value), f'{value} did not stop')
+        elif kind == 'desktop-unit':
+            args = ('systemctl', '--user', f"--machine={value['uid']}@.host")
+            self.command(*args, 'stop', '--', value['unit'])
+            self.wait(lambda: self.command(*args, 'show', value['unit'], '-p', 'ActiveState',
+                                          '--value') in ('inactive', 'failed'),
+                      f"desktop unit {value['unit']} did not stop")
         elif kind == 'session':
             self.command('loginctl', 'terminate-session', value)
             self.wait(lambda: value not in [s['id'] for s in self.sessions()], 'graphical session did not end')
@@ -565,7 +614,7 @@ class Engine:
             self.store.save(state)
             try:
                 self.host.inhibit()
-                actions = []
+                actions = [('desktop-unit', unit) for unit in snapshot.get('desktop_units', [])]
                 if snapshot['display']:
                     actions.append(('service', 'display-manager.service'))
                 # A display-manager stop may already remove its sessions; query

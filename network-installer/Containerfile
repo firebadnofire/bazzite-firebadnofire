@@ -10,6 +10,7 @@ RUN dnf5 -y --setopt=install_weak_deps=False install \
         anaconda-tui \
         dracut-config-generic \
         dracut-network \
+        glibc-langpack-en \
         grub2-efi-x64-cdboot \
         isomd5sum \
         net-tools \
@@ -82,8 +83,7 @@ RUN set -Eeuo pipefail; \
         /var/cache/* \
         /var/log/* \
         /var/tmp/*; \
-    find /usr/lib/locale -mindepth 1 -maxdepth 1 ! -name C.utf8 \
-        -exec rm -rf -- {} +; \
+    python -c 'import locale; locale.setlocale(locale.LC_ALL, "en_US.UTF-8")'; \
     command -v anaconda; \
     command -v bootc; \
     command -v grub2-mkimage; \

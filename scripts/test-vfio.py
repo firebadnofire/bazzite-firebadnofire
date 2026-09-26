@@ -47,7 +47,8 @@ class FakeHost:
         self.snap = dict(devices=dict(self.drivers), gpu=BDF,
                          modules=['nvidia_uvm', 'nvidia_drm', 'nvidia_modeset', 'nvidia'],
                          services=['nvidia-persistenced.service'], display=True,
-                         sessions=[{'id': '2', 'scope': 'session-2.scope'}], service_scopes=[],
+                         sessions=[{'id': '2', 'scope': 'session-2.scope', 'uid': '1000'}], service_scopes=[],
+                         desktop_units=[{'uid': '1000', 'unit': 'app-flatpak-browser.scope'}],
                          consoles=['/sys/class/vtconsole/vtcon0/bind'], frames=[{'driver': 'efi-framebuffer', 'device': 'efi-framebuffer.0'}])
 
     def boot(self):
@@ -574,7 +575,7 @@ class Backend(unittest.TestCase):
         self.host.no_vfio_users()
 
     def test_compute_detection_precedes_graphical_session_teardown(self):
-        self.host.command = lambda *args, **kwargs: '4321'
+        self.host.command = lambda *args, **kwargs: '<nvidia_smi_log><gpu><processes><process_info><pid>4321</pid><type>C</type></process_info></processes></gpu></nvidia_smi_log>'
         with self.assertRaises(vfio.Unsafe):
             self.host.gpu_users({'sessions': [], 'service_scopes': []}, allow_graphics=True)
 
@@ -619,6 +620,70 @@ class Backend(unittest.TestCase):
         (self.root / 'proc/1/fdinfo/4').unlink()
         with self.assertRaisesRegex(vfio.Unsafe, 'cannot inspect GPU descriptor'):
             self.host.gpu_users({'sessions': [], 'service_scopes': []})
+
+    def desktop_snapshot(self, kind='C+G', uid='1000', slice_name='app.slice'):
+        self.gpu_descriptor('flags:\t02\n')
+        (self.root / 'proc/1/cgroup').write_text(
+            f'0::/user.slice/user-{uid}.slice/user@{uid}.service/{slice_name}/app-browser.scope\n')
+        self.host.command = lambda *args, **kwargs: (
+            '<nvidia_smi_log><gpu><processes><process_info><pid>1</pid>'
+            f'<type>{kind}</type></process_info></processes></gpu></nvidia_smi_log>')
+        return {'sessions': [{'id': '2', 'uid': '1000', 'scope': 'session-2.scope'}],
+                'service_scopes': []}
+
+    def test_graphical_and_mixed_apps_are_recorded_for_teardown(self):
+        snapshot = self.desktop_snapshot()
+        self.host.gpu_users(snapshot, allow_graphics=True)
+        self.assertEqual(snapshot['desktop_units'], [{'uid': '1000', 'unit': 'app-browser.scope'}])
+        # Preparation still refuses driver unloading until the app has exited.
+        with self.assertRaises(vfio.Unsafe):
+            self.host.gpu_users(snapshot)
+
+    def test_graphics_only_app_is_recorded_for_teardown(self):
+        snapshot = self.desktop_snapshot(kind='G')
+        self.host.gpu_users(snapshot, allow_graphics=True)
+        self.assertEqual(len(snapshot['desktop_units']), 1)
+
+    def test_failed_desktop_unit_stop_is_not_ignored(self):
+        def failed(*args, **kwargs):
+            raise vfio.Failure('user manager unavailable')
+        self.host.command = failed
+        with self.assertRaisesRegex(vfio.Failure, 'user manager unavailable'):
+            self.host.apply({'kind': 'desktop-unit',
+                             'value': {'uid': '1000', 'unit': 'app-browser.scope'}})
+
+    def test_compute_in_desktop_user_manager_is_not_terminated(self):
+        snapshot = self.desktop_snapshot(kind='C')
+        with self.assertRaisesRegex(vfio.Unsafe, 'compute'):
+            self.host.gpu_users(snapshot, allow_graphics=True)
+
+    def test_other_users_graphical_app_is_not_terminated(self):
+        snapshot = self.desktop_snapshot(uid='1001', kind='G')
+        with self.assertRaises(vfio.Unsafe):
+            self.host.gpu_users(snapshot, allow_graphics=True)
+        self.assertEqual(snapshot['desktop_units'], [])
+
+    def test_portal_in_graphical_session_slice_is_recorded(self):
+        snapshot = self.desktop_snapshot(slice_name='session.slice')
+        self.host.command = lambda *args, **kwargs: '<nvidia_smi_log><gpu><processes/></gpu></nvidia_smi_log>'
+        self.host.gpu_users(snapshot, allow_graphics=True)
+        self.assertEqual(len(snapshot['desktop_units']), 1)
+
+    def test_unknown_app_gpu_handle_is_not_assumed_graphical(self):
+        snapshot = self.desktop_snapshot()
+        self.host.command = lambda *args, **kwargs: '<nvidia_smi_log><gpu><processes/></gpu></nvidia_smi_log>'
+        with self.assertRaises(vfio.Unsafe):
+            self.host.gpu_users(snapshot, allow_graphics=True)
+
+    def test_desktop_unit_stops_without_resurrection(self):
+        calls = []
+        self.host.command = lambda *args, **kwargs: calls.append(args) or 'inactive'
+        action = {'kind': 'desktop-unit', 'value': {'uid': '1000', 'unit': 'app-browser.scope'}}
+        self.host.apply(action)
+        self.host.undo(action)
+        self.assertEqual(calls[0], ('systemctl', '--user', '--machine=1000@.host',
+                                   'stop', '--', 'app-browser.scope'))
+        self.assertEqual(len(calls), 2)
 
     def test_console_write_and_readback(self):
         file = self.root / 'sys/class/vtconsole/vtcon0/bind'
