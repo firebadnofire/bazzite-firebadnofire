@@ -16,7 +16,6 @@ from pathlib import Path
 import re
 import signal
 import socket
-import stat
 import subprocess
 import sys
 import tempfile
@@ -154,6 +153,9 @@ class Store:
                         and re.fullmatch(r'[0-9]+', value['uid'])
                         and re.fullmatch(r'[A-Za-z0-9_@.\\:-]+\.(service|scope)', value['unit'])):
                     continue
+                if (kind == 'user-manager' and value in snap.get('user_managers', [])
+                        and re.fullmatch(r'[0-9]+', value)):
+                    continue
                 if kind == 'session' and value in [x['id'] for x in snap['sessions']]:
                     continue
                 raise ValueError('invalid action journal')
@@ -248,93 +250,6 @@ class Host:
                 answer.append({'id': ident, 'scope': props['Scope'], 'uid': str(int(props['User']))})
         return answer
 
-    def desktop_unit(self, snapshot, cgroup):
-        # User-managed desktop apps live outside logind's session scope.
-        for session in snapshot['sessions']:
-            uid = session.get('uid')
-            if uid is None:
-                continue
-            prefix = f'/user.slice/user-{uid}.slice/user@{uid}.service/'
-            for line in cgroup.splitlines():
-                path = line.split(':', 2)[-1]
-                if not path.startswith(prefix):
-                    continue
-                parts = path[len(prefix):].split('/')
-                if (len(parts) >= 2 and parts[0] in ('app.slice', 'session.slice')
-                        and re.fullmatch(r'[A-Za-z0-9_@.\\:-]+\.(service|scope)', parts[1])):
-                    return {'uid': uid, 'unit': parts[1]}, parts[0]
-        return None, None
-
-    def gpu_users(self, snapshot, allow_graphics=False):
-        """Allow recorded desktop teardown, but never unrelated compute users."""
-        if allow_graphics:
-            try:
-                report = ET.fromstring(self.command('nvidia-smi', '-q', '-x'))
-            except ET.ParseError as exc:
-                raise Unsafe('cannot classify NVIDIA GPU users') from exc
-            if report.tag != 'nvidia_smi_log' or report.find('gpu/processes') is None:
-                raise Unsafe('missing NVIDIA GPU process report')
-            snapshot['desktop_units'] = []
-            for entry in report.findall('gpu/processes/process_info'):
-                pid, kind = entry.findtext('pid', ''), entry.findtext('type', '')
-                if not pid.isdigit() or kind not in ('G', 'C+G'):
-                    raise Unsafe(f'GPU has compute or unclassified workload PID {pid}; stop it explicitly')
-                try:
-                    cgroup = (Path('/proc') / pid / 'cgroup').read_text()
-                except FileNotFoundError:
-                    continue
-                unit, _ = self.desktop_unit(snapshot, cgroup)
-                if unit and unit not in snapshot['desktop_units']:
-                    snapshot['desktop_units'].append(unit)
-        nodes = list(Path('/dev').glob('nvidia*')) + list(Path('/dev/nvidia-caps').glob('*'))
-        nodes += list(Path('/dev/dri').glob('*'))
-        rdevs = {p.stat().st_rdev for p in nodes if p.is_char_device()}
-        scopes = [x['scope'] for x in snapshot['sessions']]
-        scopes += snapshot['service_scopes']
-        for proc in Path('/proc').iterdir():
-            if not proc.name.isdigit() or int(proc.name) == os.getpid():
-                continue
-            try:
-                used = None
-                for fd in (proc / 'fd').iterdir():
-                    try:
-                        device = fd.stat()
-                        if not stat.S_ISCHR(device.st_mode) or device.st_rdev not in rdevs:
-                            continue
-                        info = (proc / 'fdinfo' / fd.name).read_text()
-                        flags = re.search(r'^flags:\s+([0-7]+)$', info, re.MULTILINE)
-                        if flags is None:
-                            raise Unsafe(f'cannot inspect GPU descriptor flags: {proc.name}/{fd.name}')
-                        # O_PATH pins a filesystem object without opening the driver.
-                        # In particular, PID 1 may retain these for device tracking.
-                        if int(flags[1], 8) & os.O_PATH:
-                            continue
-                        used = fd.name
-                        break
-                    except FileNotFoundError:
-                        # A closed descriptor must not hide another live descriptor.
-                        if fd.exists():
-                            raise Unsafe(f'cannot inspect GPU descriptor: {proc.name}/{fd.name}')
-                        continue
-                if not used:
-                    continue
-                cgroup = (proc / 'cgroup').read_text()
-                if allow_graphics:
-                    paths = [line.split(':', 2)[-1].split('/') for line in cgroup.splitlines()]
-                    if any(scope in path for scope in scopes if scope for path in paths):
-                        continue
-                    unit, slice_name = self.desktop_unit(snapshot, cgroup)
-                    if unit and (unit in snapshot['desktop_units'] or slice_name == 'session.slice'):
-                        if unit not in snapshot['desktop_units']:
-                            snapshot['desktop_units'].append(unit)
-                        continue
-                raise Unsafe(f'GPU device held by PID {proc.name} (fd {used}); stop workload explicitly')
-            except FileNotFoundError:
-                # A process/fd disappearing is normal; final unload verifies no holders remain.
-                continue
-            except PermissionError as exc:
-                raise Unsafe(f'cannot inspect GPU users: {proc}') from exc
-
     def snapshot(self, dom):
         gpus = [p for p in self.pci.iterdir() if int((p / 'class').read_text(), 16) >> 16 == 3]
         if len(gpus) != 1 or (gpus[0] / 'vendor').read_text().strip() != '0x10de':
@@ -381,7 +296,10 @@ class Host:
         snap = {'devices': self.bindings(devices), 'overrides': overrides, 'gpu': gpu.name, 'modules': order,
                 'services': services, 'display': display, 'sessions': self.sessions(),
                 'service_scopes': scopes, 'consoles': consoles, 'frames': frames}
-        self.gpu_users(snap, allow_graphics=True)
+        # End the user managers belonging to local graphical logins as well:
+        # Flatpak applications and portals are outside the logind session scope.
+        snap['user_managers'] = sorted({s['uid'] for s in snap['sessions']
+                                        if self.active(f"user@{s['uid']}.service")})
         self.no_vfio_users()
         return snap
 
@@ -410,7 +328,11 @@ class Host:
 
     def apply(self, action):
         kind, value = action['kind'], action['value']
-        if kind == 'service':
+        if kind == 'user-manager':
+            service = f'user@{value}.service'
+            self.command('systemctl', 'stop', service)
+            self.wait(lambda: not self.active(service), f'{service} did not stop')
+        elif kind == 'service':
             self.command('systemctl', 'stop', value)
             self.wait(lambda: not self.active(value), f'{value} did not stop')
         elif kind == 'desktop-unit':
@@ -449,7 +371,8 @@ class Host:
         elif kind == 'module':
             self.command('modprobe', value)
             self.wait(lambda: (Path('/sys/module') / value).exists(), f'{value} did not load')
-        # Ended graphical sessions are deliberately not resurrected.
+        # Ended graphical sessions and user managers are not resurrected.
+        # The display manager starts a fresh user manager on the next login.
 
     def vfio(self):
         self.command('modprobe', 'vfio_pci')
@@ -623,7 +546,7 @@ class Engine:
                 self.stage(state, [('session', s['id']) for s in self.host.sessions()
                                    if s['id'] in [x['id'] for x in snapshot['sessions']]])
                 self.stage(state, [('service', s) for s in snapshot['services']])
-                self.host.gpu_users(snapshot)
+                self.stage(state, [('user-manager', uid) for uid in snapshot.get('user_managers', [])])
                 self.stage(state, [('console', p) for p in snapshot['consoles']])
                 self.stage(state, [('frame', p) for p in snapshot['frames']])
                 self.stage(state, [('module', m) for m in snapshot['modules']])

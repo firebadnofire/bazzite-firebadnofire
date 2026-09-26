@@ -49,6 +49,7 @@ class FakeHost:
                          services=['nvidia-persistenced.service'], display=True,
                          sessions=[{'id': '2', 'scope': 'session-2.scope', 'uid': '1000'}], service_scopes=[],
                          desktop_units=[{'uid': '1000', 'unit': 'app-flatpak-browser.scope'}],
+                         user_managers=['1000'],
                          consoles=['/sys/class/vtconsole/vtcon0/bind'], frames=[{'driver': 'efi-framebuffer', 'device': 'efi-framebuffer.0'}])
 
     def boot(self):
@@ -92,9 +93,7 @@ class FakeHost:
             self.changed.remove(key)
 
     def gpu_users(self, snapshot):
-        self.event('users')
-        if self.users:
-            raise vfio.Unsafe('compute workload')
+        raise AssertionError('startup must not veto host GPU processes')
 
     def vfio(self):
         self.event('vfio')
@@ -174,6 +173,18 @@ class Lifecycle(unittest.TestCase):
         self.hook('release')
         self.hook('prepare', 'debian2-gpu', B)
         self.assertEqual(self.store.load()['uuid'], B)
+
+    def test_desktop_teardown_precedes_module_unload_without_process_veto(self):
+        self.hook('prepare')
+        events = self.host.events
+        display = events.index('apply:service:display-manager.service')
+        session = events.index('apply:session:2')
+        manager = events.index('apply:user-manager:1000')
+        module = events.index('apply:module:nvidia_uvm')
+        self.assertLess(display, session)
+        self.assertLess(session, manager)
+        self.assertLess(manager, module)
+        self.assertEqual(self.store.load()['phase'], 'prepared')
 
     def test_every_preparation_failure_immediately_rolls_back(self):
         # Count inhibitor, checks, each destructive operation, and VFIO load.
@@ -574,106 +585,21 @@ class Backend(unittest.TestCase):
         (proc / '4').symlink_to('/var/log/vfio.log')
         self.host.no_vfio_users()
 
-    def test_compute_detection_precedes_graphical_session_teardown(self):
-        self.host.command = lambda *args, **kwargs: '<nvidia_smi_log><gpu><processes><process_info><pid>4321</pid><type>C</type></process_info></processes></gpu></nvidia_smi_log>'
-        with self.assertRaises(vfio.Unsafe):
-            self.host.gpu_users({'sessions': [], 'service_scopes': []}, allow_graphics=True)
+    def test_user_manager_stopped_and_not_resurrected(self):
+        calls = []
+        self.host.command = lambda *args, **kwargs: calls.append(args) or 'inactive'
+        action = {'kind': 'user-manager', 'value': '1000'}
+        self.host.apply(action)
+        self.host.undo(action)
+        self.assertEqual(calls, [('systemctl', 'stop', 'user@1000.service'),
+                                ('systemctl', 'show', 'user@1000.service', '-p', 'ActiveState', '--value')])
 
-    def gpu_descriptor(self, flags, number='4'):
-        # Real character device, but no GPU access or root privileges required.
-        device = self.root / 'dev/nvidia0'
-        device.parent.mkdir(exist_ok=True)
-        if not device.exists():
-            device.symlink_to('/dev/null')
-        proc = self.root / 'proc/1'
-        (proc / 'fd').mkdir(parents=True, exist_ok=True)
-        (proc / 'fdinfo').mkdir(exist_ok=True)
-        (proc / 'fd' / number).symlink_to('/dev/null')
-        (proc / 'fdinfo' / number).write_text(flags)
-        (proc / 'cgroup').write_text('0::/init.scope\n')
-
-    def test_pid1_metadata_only_gpu_descriptor_is_not_a_workload(self):
-        self.gpu_descriptor(f'flags:\t{os.O_PATH | os.O_CLOEXEC:o}\n')
-        self.host.gpu_users({'sessions': [], 'service_scopes': []})
-
-    def test_pid1_real_gpu_descriptors_remain_blocked(self):
-        for flags in (os.O_RDONLY, os.O_WRONLY, os.O_RDWR):
-            with self.subTest(flags=flags):
-                self.gpu_descriptor(f'flags:\t{flags:o}\n', str(flags + 4))
-                with self.assertRaisesRegex(vfio.Unsafe, r'PID 1 \(fd'):
-                    self.host.gpu_users({'sessions': [], 'service_scopes': []})
-                (self.root / 'proc/1/fd' / str(flags + 4)).unlink()
-
-    def test_metadata_descriptor_does_not_hide_real_gpu_descriptor(self):
-        self.gpu_descriptor(f'flags:\t{os.O_PATH:o}\n')
-        self.gpu_descriptor('flags:\t02\n', '5')
-        with self.assertRaisesRegex(vfio.Unsafe, r'PID 1 \(fd 5\)'):
-            self.host.gpu_users({'sessions': [], 'service_scopes': []})
-
-    def test_unparseable_gpu_descriptor_flags_fail_closed(self):
-        self.gpu_descriptor('flags: unknown\n')
-        with self.assertRaisesRegex(vfio.Unsafe, 'cannot inspect GPU descriptor flags'):
-            self.host.gpu_users({'sessions': [], 'service_scopes': []})
-
-    def test_missing_fdinfo_for_live_gpu_descriptor_fails_closed(self):
-        self.gpu_descriptor('flags:\t02\n')
-        (self.root / 'proc/1/fdinfo/4').unlink()
-        with self.assertRaisesRegex(vfio.Unsafe, 'cannot inspect GPU descriptor'):
-            self.host.gpu_users({'sessions': [], 'service_scopes': []})
-
-    def desktop_snapshot(self, kind='C+G', uid='1000', slice_name='app.slice'):
-        self.gpu_descriptor('flags:\t02\n')
-        (self.root / 'proc/1/cgroup').write_text(
-            f'0::/user.slice/user-{uid}.slice/user@{uid}.service/{slice_name}/app-browser.scope\n')
-        self.host.command = lambda *args, **kwargs: (
-            '<nvidia_smi_log><gpu><processes><process_info><pid>1</pid>'
-            f'<type>{kind}</type></process_info></processes></gpu></nvidia_smi_log>')
-        return {'sessions': [{'id': '2', 'uid': '1000', 'scope': 'session-2.scope'}],
-                'service_scopes': []}
-
-    def test_graphical_and_mixed_apps_are_recorded_for_teardown(self):
-        snapshot = self.desktop_snapshot()
-        self.host.gpu_users(snapshot, allow_graphics=True)
-        self.assertEqual(snapshot['desktop_units'], [{'uid': '1000', 'unit': 'app-browser.scope'}])
-        # Preparation still refuses driver unloading until the app has exited.
-        with self.assertRaises(vfio.Unsafe):
-            self.host.gpu_users(snapshot)
-
-    def test_graphics_only_app_is_recorded_for_teardown(self):
-        snapshot = self.desktop_snapshot(kind='G')
-        self.host.gpu_users(snapshot, allow_graphics=True)
-        self.assertEqual(len(snapshot['desktop_units']), 1)
-
-    def test_failed_desktop_unit_stop_is_not_ignored(self):
+    def test_user_manager_stop_failure_propagates(self):
         def failed(*args, **kwargs):
-            raise vfio.Failure('user manager unavailable')
+            raise vfio.Failure('stop failed')
         self.host.command = failed
-        with self.assertRaisesRegex(vfio.Failure, 'user manager unavailable'):
-            self.host.apply({'kind': 'desktop-unit',
-                             'value': {'uid': '1000', 'unit': 'app-browser.scope'}})
-
-    def test_compute_in_desktop_user_manager_is_not_terminated(self):
-        snapshot = self.desktop_snapshot(kind='C')
-        with self.assertRaisesRegex(vfio.Unsafe, 'compute'):
-            self.host.gpu_users(snapshot, allow_graphics=True)
-
-    def test_other_users_graphical_app_is_not_terminated(self):
-        snapshot = self.desktop_snapshot(uid='1001', kind='G')
-        with self.assertRaises(vfio.Unsafe):
-            self.host.gpu_users(snapshot, allow_graphics=True)
-        self.assertEqual(snapshot['desktop_units'], [])
-
-    def test_portal_in_graphical_session_slice_is_recorded(self):
-        snapshot = self.desktop_snapshot(slice_name='session.slice')
-        self.host.command = lambda *args, **kwargs: '<nvidia_smi_log><gpu><processes/></gpu></nvidia_smi_log>'
-        self.host.gpu_users(snapshot, allow_graphics=True)
-        self.assertEqual(len(snapshot['desktop_units']), 1)
-
-    def test_unknown_app_gpu_handle_is_not_assumed_graphical(self):
-        snapshot = self.desktop_snapshot()
-        self.host.command = lambda *args, **kwargs: '<nvidia_smi_log><gpu><processes/></gpu></nvidia_smi_log>'
-        with self.assertRaises(vfio.Unsafe):
-            self.host.gpu_users(snapshot, allow_graphics=True)
+        with self.assertRaises(vfio.Failure):
+            self.host.apply({'kind': 'user-manager', 'value': '1000'})
 
     def test_desktop_unit_stops_without_resurrection(self):
         calls = []

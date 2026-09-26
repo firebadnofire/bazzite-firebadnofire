@@ -10,18 +10,15 @@ are not supported by this integration.
 Starting a GPU guest **ends the local graphical session and its applications**.
 Shutdown restores the recorded GPU/driver resources and returns to the login
 screen if the display manager was originally active. It does not preserve a
-locked desktop. Save work first. An unrelated compute workload causes handoff
-to fail; the scripts do not kill it. Desktop applications reported by NVIDIA as
-`G` or `C+G` are eligible for teardown when they belong to the local graphical
-session or its systemd user application units. `C+G` alone does not establish
-an unrelated compute workload (for example, Electron applications can use both).
-The helper journals and stops those GPU application units and graphical
-`session.slice` GPU services before ending the login session, then verifies that
-no GPU handles remain before unloading modules. It does not stop the whole user
-manager or restart ended applications. Unknown holders and compute-only jobs
-still block preparation. See [NVIDIA process types](https://docs.nvidia.com/deploy/nvidia-smi/).
-Other PCI passthrough workloads may prevent
-recovery: open VFIO/iommufd handles are deliberately treated conservatively.
+locked desktop. Save work first. Startup does not inspect NVIDIA GPU holders or
+veto PID 1, graphical applications, or compute workloads. It stops the display
+manager, ends local graphical sessions, and stops their systemd user managers
+(including Flatpak applications, portals, and background jobs for those users).
+Ended sessions and user managers are not restarted during restoration; the next
+login starts a fresh user manager. Other users' sessions are not explicitly ended.
+Driver unload and PCI binding operations must still succeed; failures roll back
+or retain recovery-required ownership. Existing guest ownership and open
+VFIO/iommufd handles still prevent an unsafe competing handoff or restoration.
 
 ## Deployment and prerequisites
 
@@ -112,17 +109,13 @@ For libvirt's filter-capable calls, empty output preserves upstream hook output.
 Prepare/start hooks do not edit VM XML through stdout. No hook calls libvirt APIs
 or `virsh`; doing that can deadlock the daemon.
 
-### GPU holder diagnostics
+### Older GPU-holder errors
 
-`GPU device held by PID ... (fd ...)` identifies a real device descriptor that
-blocks preparation. Metadata-only `O_PATH` descriptors are ignored because they
-do not open the device driver; PID 1 is otherwise subject to the same checks as
-all processes. Do not stop PID 1 or bypass the workload check. Inspect the reported
-descriptor with `sudo readlink /proc/PID/fd/FD` and
-`sudo cat /proc/PID/fdinfo/FD`, substituting the reported numbers.
-Older images can incorrectly report metadata-only descriptors as GPU workloads.
-Deploy an image containing the corrected helper through bootc and reboot before
-retrying; changing the stable `/etc` adapter is unnecessary.
+An error such as `GPU device held by PID 1 (fd ...)` comes from an older helper.
+The current startup path has no NVIDIA process-holder veto. Deploy an image
+containing the updated helper through bootc and reboot before retrying; changing
+the stable `/etc` adapter is unnecessary. Module unload errors still matter:
+inspect the journal for the failed operation and recovery status.
 
 ## Inhibition, daemon restarts, and recovery
 

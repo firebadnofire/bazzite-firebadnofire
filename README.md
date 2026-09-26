@@ -1230,15 +1230,12 @@ privileged local policy decision; do not apply it indiscriminately.
 The image ships single-GPU NVIDIA handoff for system-libvirt guests named with
 an exact, case-sensitive `-gpu` suffix. Only one such guest can own the GPU;
 shutdown restores the host driver and login screen. Starting a GPU guest ends
-the graphical session, including GPU desktop apps managed outside the login
-session by systemd (such as Flatpak browsers and Vesktop). Mixed graphics/compute
-desktop apps are closed; unrelated compute-only jobs still block handoff.
-Users must configure managed PCI assignments and the
-machine's firmware/IOMMU prerequisites first.
-
-GPU-holder diagnostics distinguish metadata-only device descriptors from active
-GPU handles, including those owned by PID 1. See the troubleshooting guidance below
-before attempting to stop a reported holder.
+the graphical session and stops its systemd user manager, including Flatpak apps,
+portals, and that user's background jobs. There is no NVIDIA process-holder veto
+for PID 1, graphical apps, or compute jobs. Driver unload and PCI handoff must
+still succeed; otherwise preparation rolls back. The old session is not reopened.
+Users must configure managed PCI assignments and the machine's firmware/IOMMU
+prerequisites first.
 
 Read [single-GPU VFIO setup, activation checks, recovery, and validation](docs/vfio.md)
 before use. After a bootc update and reboot, `sudo vfio-host-check` verifies
