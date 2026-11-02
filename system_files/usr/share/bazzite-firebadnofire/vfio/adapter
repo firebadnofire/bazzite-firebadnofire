@@ -1,0 +1,11 @@
+#!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
+# VFIO adapter ABI 1. Keep local customizations in separate hooks.
+# Empty stdout is libvirt's identity filter. A reconnect failure kills guests.
+if [[ ${2-} == reconnect ]]; then
+    if ! /usr/libexec/bazzite-firebadnofire-vfio-run hook "$@"; then
+        echo 'vfio: reconnect helper failed; preserving guest, inspect ownership before acquisition' >&2
+    fi
+    exit 0
+fi
+exec /usr/libexec/bazzite-firebadnofire-vfio-run hook "$@"

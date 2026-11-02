@@ -141,12 +141,14 @@ jobs:
           source bazzite-firebadnofire.env
           short_sha="${GITHUB_SHA:0:12}"
           created="$(date --utc +%Y-%m-%dT%H:%M:%SZ)"
+          image_build_date="${created}"
           run_attempt="${GITHUB_RUN_ATTEMPT:-1}"
           local_image="localhost/${IMAGE_NAME}:ci-${GITHUB_RUN_ID}-${run_attempt}"
 
           docker buildx build --load \
             --pull \
             --platform linux/amd64 \
+            --build-arg "IMAGE_BUILD_DATE=${image_build_date}" \
             --label "org.opencontainers.image.created=${created}" \
             --label "org.opencontainers.image.description=${IMAGE_DESC}" \
             --label "org.opencontainers.image.documentation=${REPO_URL}" \
@@ -160,6 +162,7 @@ jobs:
             --file Containerfile \
             .
           echo "LOCAL_IMAGE=${local_image}" >> "${GITHUB_ENV}"
+          echo "IMAGE_BUILD_DATE=${image_build_date}" >> "${GITHUB_ENV}"
 
       - name: Inspect image contract
         id: inspect
@@ -167,7 +170,7 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p output/image-inspection
-          docker run --rm --entrypoint /usr/bin/bash "${LOCAL_IMAGE}" -c '
+          docker run --rm --env "IMAGE_BUILD_DATE=${IMAGE_BUILD_DATE}" --entrypoint /usr/bin/bash "${LOCAL_IMAGE}" -c '
             set -Eeuo pipefail
             bootc container lint --fatal-warnings
             rpm -q dolphin foot hyprland hyprland-guiutils hypridle hyprlock hyprpolkitagent \
@@ -186,6 +189,11 @@ jobs:
             /usr/libexec/bazzite-firebadnofire-verify-hyprland \
               /usr/share/bazzite-firebadnofire/hyprland.lua
             test -x /usr/bin/looking-glass-client
+            test -x /usr/bin/vfio-host-recover
+            test -x /usr/bin/vfio-host-check
+            /usr/libexec/bazzite-firebadnofire-vfio-run check-deployment
+            test "$(systemctl is-enabled bazzite-firebadnofire-vfio-reconcile.timer)" = enabled
+            test -s /usr/share/licenses/bazzite-firebadnofire-vfio/COPYING
             test -x /usr/libexec/xdg-desktop-portal-hyprland
             test -x /usr/libexec/xdg-desktop-portal-gtk
             test -x /usr/libexec/xdg-desktop-portal
@@ -203,6 +211,9 @@ jobs:
             grep -Fqx "PRETTY_NAME=\"firebadnofire-bazzite\"" /etc/os-release
             grep -Fqx "ID=bazzite" /etc/os-release
             grep -Fqx "ID_LIKE=\"fedora\"" /etc/os-release
+            [[ "$(grep -c '^IMAGE_BUILD_DATE=' /usr/lib/os-release)" == 1 ]]
+            grep -Eq '^IMAGE_BUILD_DATE=[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z$' /usr/lib/os-release
+            grep -Fqx "IMAGE_BUILD_DATE=${IMAGE_BUILD_DATE}" /usr/lib/os-release
             test -f /usr/share/wayland-sessions/hyprland.desktop
             grep -qx "Exec=/usr/libexec/bazzite-firebadnofire-start-hyprland" \
               /usr/share/wayland-sessions/hyprland.desktop
@@ -239,7 +250,7 @@ jobs:
             grep -Fqx "Name=org.freedesktop.FileManager1" \
               /usr/share/dbus-1/services/org.kde.dolphin.FileManager1.service
             grep -Fqx "DOWNLOAD=Downloads" /etc/xdg/user-dirs.defaults
-            test "$(systemctl is-enabled libvirtd.service)" = enabled
+            test "$(systemctl is-enabled virtqemud.service)" = enabled
             test "$(systemctl is-enabled podman.socket)" = enabled
             test "$(systemctl is-enabled plasmalogin.service)" = enabled
             test "$(readlink -f /etc/systemd/system/display-manager.service)" = \

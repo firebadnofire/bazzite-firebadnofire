@@ -96,6 +96,18 @@ shellcheck \
     system_files/usr/libexec/bazzite-firebadnofire-start-hyprland \
     system_files/usr/libexec/bazzite-firebadnofire-verify-hyprland
 
+# VFIO tests are entirely mocked: never execute the production Host backend here.
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-vfio.py
+bash -n scripts/test-vfio-container.sh \
+    system_files/etc/libvirt/hooks/qemu.d/90-bazzite-firebadnofire-vfio \
+    system_files/usr/libexec/bazzite-firebadnofire-vfio-run \
+    system_files/usr/bin/vfio-host-recover system_files/usr/bin/vfio-host-check
+shellcheck scripts/test-vfio-container.sh \
+    system_files/etc/libvirt/hooks/qemu.d/90-bazzite-firebadnofire-vfio \
+    system_files/usr/libexec/bazzite-firebadnofire-vfio-run \
+    system_files/usr/bin/vfio-host-recover system_files/usr/bin/vfio-host-check
+cmp system_files/etc/libvirt/hooks/qemu.d/90-bazzite-firebadnofire-vfio \
+    system_files/usr/share/bazzite-firebadnofire/vfio/adapter
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-repo-keys.py
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-hyprland-verification.py
 PYTHONDONTWRITEBYTECODE=1 python3 network-installer/patch-anaconda-progress.py --self-test
@@ -743,6 +755,10 @@ for required in (
     "anaconda-core",
     "anaconda-tui",
     "dracut-network",
+    "glibc-langpack-en",
+    "libblockdev-plugins-all",
+    "assert not blivet.missing_plugs",
+    'locale.setlocale(locale.LC_ALL, "en_US.UTF-8")',
     "tmux",
     "'qemu-user-static*'",
     "/usr/lib/firmware",
@@ -753,6 +769,9 @@ for required in (
     "network-installer/interactive-defaults.ks /usr/share/anaconda/interactive-defaults.ks",
     "network-installer/patch-anaconda-progress.py /usr/libexec/patch-anaconda-progress",
     "python /usr/libexec/patch-anaconda-progress",
+    "anaconda.target.wants/anaconda-tmux@${tty}.service",
+    "anaconda.target.wants/anaconda-shell@tty2.service",
+    "ln -sfn /dev/null /etc/systemd/system/serial-getty@ttyS0.service",
 ):
     if required not in installer_containerfile:
         raise ValueError(f"network installer Containerfile is missing: {required}")
@@ -760,6 +779,8 @@ installer_iso = Path("network-installer/iso.yaml").read_text(encoding="utf-8")
 for required in (
     "enforcing=0",
     "rd.plymouth=0 plymouth.enable=0",
+    "systemd.unit=anaconda.target",
+    "console=ttyS0,115200n8 console=tty0",
 ):
     if required not in installer_iso:
         raise ValueError(f"network installer ISO configuration is missing: {required}")
@@ -767,7 +788,7 @@ kickstart = Path("network-installer/interactive-defaults.ks").read_text(encoding
 for required in (
     "text",
     "network --bootproto=dhcp --device=link --activate --onboot=on",
-    "bootc --source-imgref registry:pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable",
+    "bootc --source-imgref registry:ghcr.io/firebadnofire/bazzite-firebadnofire:stable",
     "--target-imgref pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable",
 ):
     if required not in kickstart:

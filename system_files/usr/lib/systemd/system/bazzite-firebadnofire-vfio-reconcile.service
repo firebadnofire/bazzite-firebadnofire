@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-only
+[Unit]
+Description=Conservatively reconcile single-GPU ownership and sleep inhibition
+After=virtqemud.service libvirtd.service systemd-logind.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/bazzite-firebadnofire-vfio-run reconcile
+TimeoutStartSec=180
+UMask=0077
+# Exit 2 means ownership is active/unknown, not permission to recover it.
+SuccessExitStatus=2

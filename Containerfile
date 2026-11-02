@@ -8,6 +8,8 @@ COPY system_files /system_files
 # GeForce RTX generation. Keep this digest synchronized with the stable tag.
 FROM ghcr.io/ublue-os/bazzite-nvidia-open:stable@sha256:23ee832c0eb9e0ff79bc10f2958b2f3bede290841b258ee45826604228964e0d
 
+ARG IMAGE_BUILD_DATE
+
 ### [IM]MUTABLE /opt
 ## Some bootable images, like Fedora, have /opt symlinked to /var/opt, in order to
 ## make it mutable/writable for users. However, some packages write files to this directory,
@@ -23,7 +25,7 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
     --mount=type=cache,dst=/var/cache \
     --mount=type=cache,dst=/var/log \
     --mount=type=tmpfs,dst=/tmp \
-    /usr/bin/bash /ctx/build.sh
+    IMAGE_BUILD_DATE="${IMAGE_BUILD_DATE}" /usr/bin/bash /ctx/build.sh
 
 # DNF's countme telemetry is disposable build cache, not deployment state.
 RUN rm -rf /var/lib/dnf/repos

@@ -1,0 +1,8 @@
+#!/usr/bin/bash
+# SPDX-License-Identifier: GPL-3.0-only
+# Explicit post-reboot activation test; does not restart libvirt or detach GPUs.
+if [[ $# != 0 ]]; then
+    echo 'usage: vfio-host-check' >&2
+    exit 3
+fi
+exec /usr/libexec/bazzite-firebadnofire-vfio-run check-activation

@@ -39,7 +39,7 @@ installing it on a workstation.
 | Desktop plumbing | Waybar, Fuzzel, SwayNotificationCenter, NetworkManager and Bluetooth applets, portals, polkit agent, clipboard history, screenshots, idle locking |
 | Administration | SSH and inherited networking/storage tools plus mosh, nmap, Wireshark CLI, iperf3, strace, ripgrep, fd, sysstat, hardware inspection, and serial-console utilities |
 | Development | Podman/toolbox support from Bazzite plus GitHub CLI, Git LFS, GCC/C++, CMake, Meson, Ninja, pkg-config, and Python pip |
-| Virtualization | QEMU/KVM, libvirt, virt-manager, virt-install, virt-viewer, swtpm, SPICE, libguestfs, and the Looking Glass B7 client |
+| Virtualization | QEMU/KVM, libvirt, virt-manager, virt-install, virt-viewer, swtpm, SPICE, libguestfs, the Looking Glass B7 client, and exclusive `*-gpu` NVIDIA handoff |
 | CI | Forgejo Actions on the global `ubuntu-22.04` runner label |
 | Publication | Canonical Forgejo image on `pubcode.archuser.org` with a required GHCR mirror at `ghcr.io/firebadnofire/bazzite-firebadnofire` |
 | Signing | Separate key-based Cosign signatures over each registry-qualified OCI digest; detached OpenPGP signatures for downloadable disk artifacts |
@@ -301,13 +301,24 @@ Treat every base-image digest change as a supply-chain update:
    ```bash
    skopeo inspect docker://ghcr.io/ublue-os/bazzite-nvidia-open:stable
    skopeo inspect docker://quay.io/centos-bootc/bootc-image-builder:latest
-   skopeo inspect --raw docker://quay.io/fedora/fedora-bootc:44 | sha256sum
+   skopeo inspect --format '{{.Digest}}' docker://quay.io/fedora/fedora-bootc:44
    ```
 
 3. Update the Bazzite digest in `Containerfile`, the Image Builder digest in
    `bazzite-firebadnofire.env` and `.forgejo/workflows/build-disk.yml` together,
    or the Fedora bootc digest in `network-installer/Containerfile`, according to
    the input being updated.
+   Verify the Fedora pin by digest against Quay before building (Skopeo requires
+   omitting the tag when a digest is supplied):
+
+   ```bash
+   installer_base="$(awk '/^FROM / {print $2; exit}' network-installer/Containerfile)"
+   skopeo inspect --override-arch amd64 \
+     "docker://${installer_base/:44@/@}"
+   ```
+
+   If Quay returns `manifest unknown`, the pinned manifest is unavailable;
+   resolve and verify a new Fedora 44 digest before updating the pin.
 4. Run static validation and the complete affected build. For the workstation
    image, also run image inspection and VM tests; for the network installer,
    force-pull and build its container before dispatching the ISO workflow.
@@ -782,11 +793,11 @@ Kickstart and mirror configuration before release.
 The installer is text-mode and interactive so booting the media does not
 silently select or erase a disk. It activates DHCP, then Anaconda resolves and
 pulls the then-current
-`pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable` logical stream
-only after boot. The repository-scoped containers/image configuration pulls
-from synchronized
-`ghcr.io/firebadnofire/bazzite-firebadnofire:stable` first and falls back to
-Pubcode.
+`ghcr.io/firebadnofire/bazzite-firebadnofire:stable` source directly only after
+boot, while bootc records
+`pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable` as the update
+identity. Subsequent pulls of that identity try GHCR first through the
+repository-scoped containers/image configuration, then fall back to Pubcode.
 Installation therefore requires working network link, DHCP, DNS, trusted CA
 time/state, and outbound HTTPS to at least one endpoint. There is no offline
 fallback in this ISO.
@@ -806,6 +817,49 @@ installer services that request modules after the live-root transition, and it
 includes `tmux` explicitly because weak dependencies are disabled while the
 interactive Anaconda text service requires it. Plymouth is disabled on the
 installer kernel command line so it cannot hold the deliberately text-only UI.
+The installer explicitly includes `libblockdev-plugins-all`, as recommended by
+[Blivet upstream](https://github.com/storaged-project/blivet#installation),
+because disabling weak dependencies otherwise omits storage plugins. The build
+imports Blivet and fails if any of its requested plugins cannot load. Without
+the LVM plugin, Blivet's device scan raises a `TypeError` and Anaconda reports
+no disks even when `lsblk` sees both SATA and VirtIO devices.
+
+A libvirt test of the September 26 `042bb6c4c088` ISO reproduced that failure
+with disposable 25 GiB SATA and 24 GiB VirtIO disks. Installing the plugin
+bundle in the live environment and restarting Anaconda made both disks appear
+in Installation Destination. No installation or formatting was performed;
+the corrected build still needs a fresh ISO boot test.
+
+It also explicitly installs `glibc-langpack-en` and preserves `/usr/lib/locale`:
+Anaconda's D-Bus modules require `en_US.UTF-8`, even in text mode. The build
+checks that Python can activate that locale after cleanup. Keeping only
+`C.utf8` causes the installer to exit with `locale.Error: unsupported locale
+setting` before displaying its menu.
+The boot command explicitly selects `anaconda.target`. Its text UI is attached
+to both the VGA console (`tty1`) and the first serial port (`ttyS0`), with
+kernel messages on both and a recovery shell already running on `tty2`
+(`Ctrl+Alt+F2`; return with `Ctrl+Alt+F1`). The serial port shares the same
+Anaconda tmux session; it does not start a second installer. A serial login
+getty is masked to prevent it competing for that terminal.
+
+For libvirt, configure a serial device with a PTY backend and a console with
+target type `serial`, port `0`, then attach with
+`virsh -c qemu:///system console VM_NAME` (exit with `Ctrl+]`). A host PTY alone
+does not activate a guest console. The ISO configures 115200 baud, 8N1; a
+virtio console (`hvc0`) is a different device. Inside the installer tmux
+session, `Alt+Tab` cycles through the installer, shell, and log windows.
+If the UI still fails, use the recovery shell to inspect
+`systemctl --failed`, `journalctl -b -u anaconda.service -u anaconda-tmux@tty1.service -u anaconda-tmux@ttyS0.service`,
+and `/tmp/anaconda.log`. Rebuild the network ISO to include these changes;
+previously downloaded ISOs are unaffected. Static validation does not prove
+boot success; verify both VGA and serial interaction on the rebuilt media.
+
+A libvirt BIOS boot test of the September 25 `f20efba74425` network ISO
+confirmed working serial input/output and reproduced that missing-locale
+failure. Restoring locale data in the live test VM allowed Anaconda to reach
+its interactive menu. This was a diskless startup test, not a completed
+installation; the locale build correction still needs a rebuilt-ISO test.
+
 The live installer loads SELinux policy in permissive mode, matching Anaconda's
 documented installer-runtime behavior. This does not disable SELinux in the
 downloaded and installed workstation image, whose own policy remains enforcing.
@@ -1070,7 +1124,7 @@ In the VM, verify at minimum:
 ```bash
 sudo bootc status
 grep -E '^(NAME|PRETTY_NAME|ID|ID_LIKE)=' /etc/os-release
-systemctl is-enabled libvirtd.service
+systemctl is-enabled virtqemud.service
 rpm -q dolphin foot hyprland hyprland-guiutils hyprpaper \
   xdg-desktop-portal xdg-desktop-portal-gtk \
   xdg-desktop-portal-hyprland xdg-user-dirs qemu-kvm virt-manager
@@ -1164,7 +1218,7 @@ sudo bootc status
 
 The shipped repository-scoped registry configuration preserves
 `pubcode.archuser.org/universalblue/bazzite-firebadnofire:stable` as the origin
-shown by bootc. Pulls transparently rewrite the same repository/tag or digest to
+shown by bootc. Pulls try
 `ghcr.io/firebadnofire/bazzite-firebadnofire` first, then fall back to Pubcode
 if GHCR is unavailable. Keep the two `stable` tags synchronized; the
 network-installer workflow fails before building when both are reachable and
@@ -1197,9 +1251,10 @@ than deleting OSTree or bootloader state by hand.
 
 ## Libvirt, QEMU, and VFIO boundary
 
-The image enables `libvirtd.service` and installs the workstation virtualization
-stack. User authorization is machine-specific. After installation, check group
-membership and add the intended account only if needed:
+The image enables Fedora’s modular `virtqemud.service` and supporting libvirt
+sockets, disables the conflicting legacy `libvirtd` defaults, and installs the
+workstation virtualization stack. User authorization is machine-specific. After
+installation, check group membership and add the intended account only if needed:
 
 ```bash
 getent group libvirt
@@ -1210,13 +1265,32 @@ sudo usermod --append --groups libvirt "$USER"
 Log out and back in before opening virt-manager. Adding users to `libvirt` is a
 privileged local policy decision; do not apply it indiscriminately.
 
-This image deliberately does **not** configure VFIO passthrough. It does not set
-IOMMU kernel arguments, bind PCI IDs, isolate CPUs, reserve huge pages, alter
-initramfs contents, configure Looking Glass shared memory, or detach a host GPU.
-Those choices depend on the motherboard's IOMMU groups, exact PCI functions,
-guest OS, and recovery plan. A wrong configuration can remove the host display
-or make the machine unbootable. Inspect hardware and design a rollback path on
-the target workstation before making those separate changes.
+The image ships single-GPU NVIDIA handoff for system-libvirt guests named with
+an exact, case-sensitive `-gpu` suffix. Only one such guest can own the GPU;
+shutdown restores the host driver and login screen. Starting a GPU guest ends
+the graphical session and stops its systemd user manager, including Flatpak apps,
+portals, and that user's background jobs. Abandoned graphical session scopes are
+forcibly terminated and checked for completion. There is no NVIDIA process-holder veto
+for PID 1, graphical apps, or compute jobs. Driver unload and PCI handoff must
+still succeed; otherwise preparation rolls back. The old session is not reopened.
+Users must configure managed PCI assignments and the machine's firmware/IOMMU
+prerequisites first.
+
+Read [single-GPU VFIO setup, activation checks, recovery, and validation](docs/vfio.md)
+before use. If an older installed helper still reports `GPU device held by PID`,
+`sudo bash scripts/vfio-live-hotfix.sh` temporarily activates the corrected checkout
+helper until reboot, without restarting libvirt. Deploy the updated image for the
+permanent fix. After a bootc update and reboot, `sudo vfio-host-check` verifies
+that the running daemon executes the installed adapter.
+`sudo vfio-host-recover --status` inspects ownership; `sudo vfio-host-recover` performs guarded recovery.
+Locally modified `/etc` hooks are preserved and may require reconciliation.
+
+These GPLv3 components adapt RisingPrism's single-GPU scripts, with the upstream
+license and contributor credits shipped in the image. The implementation does
+not set machine-specific PCI IDs, IOMMU kernel arguments, ROMs, driver
+blacklists, CPU isolation, huge pages, or Looking Glass shared memory. Mocked
+tests and image checks do not establish physical GPU handoff compatibility;
+follow the separate booted-system and hardware acceptance matrix in the guide.
 
 ## Validation status and known risks
 

@@ -1,4 +1,5 @@
 # Additional RPM packages baked into the base image.
+iftop
 vim
 nano
 bind-utils

@@ -2,6 +2,13 @@
 
 set -Eeuo pipefail
 
+: "${IMAGE_BUILD_DATE:?IMAGE_BUILD_DATE build argument is required}"
+if [[ ! "${IMAGE_BUILD_DATE}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] ||
+    [[ "$(date --utc --date="${IMAGE_BUILD_DATE}" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)" != "${IMAGE_BUILD_DATE}" ]]; then
+    echo "error: IMAGE_BUILD_DATE must be a valid YYYY-MM-DDTHH:MM:SSZ timestamp" >&2
+    exit 1
+fi
+
 readonly HYPRLAND_COPR="lionheartp/Hyprland"
 
 desktop_packages=(
@@ -24,6 +31,7 @@ development_packages=(
 virtualization_packages=(
     libguestfs-tools libvirt libvirt-client libvirt-daemon-kvm
     qemu-kvm spice-gtk swtpm swtpm-tools virt-install virt-manager virt-viewer
+    python3 python3-dbus
 )
 
 looking_glass_build_packages=(
@@ -110,6 +118,14 @@ sed -i \
     -e 's/^PRETTY_NAME=.*/PRETTY_NAME="firebadnofire-bazzite"/' \
     /usr/lib/os-release
 
+# Keep the complete upstream os-release metadata while replacing any existing
+# build-date field with the timestamp supplied by the CI invocation.
+os_release_tmp="$(mktemp /usr/lib/os-release.XXXXXX)"
+awk '!/^IMAGE_BUILD_DATE=/' /usr/lib/os-release > "${os_release_tmp}"
+printf 'IMAGE_BUILD_DATE=%s\n' "${IMAGE_BUILD_DATE}" >> "${os_release_tmp}"
+cat "${os_release_tmp}" > /usr/lib/os-release
+rm -f "${os_release_tmp}"
+
 chmod 0755 \
     /usr/libexec/bazzite-firebadnofire-verify-hyprland \
     /usr/libexec/bazzite-firebadnofire-rotate-wallpaper \
@@ -126,7 +142,33 @@ rm -rf \
     /run/screen \
     /run/selinux-policy
 
-systemctl enable libvirtd.service podman.socket
+# Fedora 44 clients use the modular QEMU socket. Do not enable the conflicting
+# monolithic service alongside Fedora's modular preset. No running host changes.
+systemctl disable libvirtd.service libvirtd.socket libvirtd-ro.socket libvirtd-admin.socket
+systemctl enable virtqemud.service virtqemud.socket \
+    virtnetworkd.socket virtnodedevd.socket virtsecretd.socket virtstoraged.socket \
+    virtlogd.socket virtlockd.socket virtproxyd.socket \
+    podman.socket bazzite-firebadnofire-vfio-reconcile.timer
+
+# Stable /etc adapter delegates to the immutable implementation. Never overwrite
+# local hooks at runtime; bootc merges this single new default on deployment.
+chmod 0755 /etc/libvirt/hooks/qemu.d/90-bazzite-firebadnofire-vfio \
+    /usr/libexec/bazzite-firebadnofire-vfio-run /usr/bin/vfio-host-recover \
+    /usr/bin/vfio-host-check
+/usr/libexec/bazzite-firebadnofire-vfio-run check-deployment
+python3 -I -c 'import ast, dbus; from pathlib import Path; ast.parse(Path("/usr/libexec/bazzite-firebadnofire-vfio/v1/vfio.py").read_text())'
+systemd-analyze verify \
+    /usr/lib/systemd/system/bazzite-firebadnofire-vfio-inhibit.service \
+    /usr/lib/systemd/system/bazzite-firebadnofire-vfio-reconcile.service \
+    /usr/lib/systemd/system/bazzite-firebadnofire-vfio-reconcile.timer
+# systemd-analyze creates a runtime-only unit-load sentinel; do not ship it.
+rm -f /run/systemd/systemd-units-load
+rmdir --ignore-fail-on-non-empty /run/systemd
+# Record the version-sensitive lifecycle/deployment dependencies in build logs.
+rpm -q libvirt-daemon libvirt-daemon-driver-qemu bootc systemd selinux-policy-targeted python3-dbus
+matchpathcon /etc/libvirt/hooks/qemu.d/90-bazzite-firebadnofire-vfio
+test -s /usr/share/licenses/bazzite-firebadnofire-vfio/COPYING
+test -s /usr/share/licenses/bazzite-firebadnofire-vfio/NOTICE
 
 # Fail the image build if the user-facing workstation contract is incomplete.
 rpm -q \
@@ -224,7 +266,9 @@ grep -Fq 'org.freedesktop.impl.portal.ScreenCast' \
 grep -Fqx 'Name=org.freedesktop.FileManager1' \
     /usr/share/dbus-1/services/org.kde.dolphin.FileManager1.service
 grep -Fqx 'DOWNLOAD=Downloads' /etc/xdg/user-dirs.defaults
-test "$(systemctl is-enabled libvirtd.service)" = "enabled"
+test "$(systemctl is-enabled virtqemud.service)" = "enabled"
+test "$(systemctl is-enabled virtqemud.socket)" = "enabled"
+test "$(systemctl is-enabled libvirtd.service)" = "disabled"
 test "$(systemctl is-enabled podman.socket)" = "enabled"
 test "$(systemctl is-enabled plasmalogin.service)" = "enabled"
 test "$(readlink -f /etc/systemd/system/display-manager.service)" = \

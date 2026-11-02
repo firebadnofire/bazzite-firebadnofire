@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-only
+[Unit]
+Description=Check single-GPU ownership and effective sleep inhibition
+
+[Timer]
+OnBootSec=30
+OnUnitInactiveSec=15
+Unit=bazzite-firebadnofire-vfio-reconcile.service
+
+[Install]
+WantedBy=timers.target

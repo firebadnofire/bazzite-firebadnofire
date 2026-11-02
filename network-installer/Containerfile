@@ -1,4 +1,4 @@
-FROM quay.io/fedora/fedora-bootc:44@sha256:2bf2d0403ed546aa4ae90bb8ba684986cce183868d2f3adb7de69f1d0cf86b2d
+FROM quay.io/fedora/fedora-bootc:44@sha256:6718b0634e138d1909e752dc0f7d8a203ede6ece33bc637f72282bde3d44887b
 
 # Keep the boot environment focused on installation. The workstation image is
 # deliberately not an input to this build and is pulled only after ISO boot.
@@ -10,8 +10,10 @@ RUN dnf5 -y --setopt=install_weak_deps=False install \
         anaconda-tui \
         dracut-config-generic \
         dracut-network \
+        glibc-langpack-en \
         grub2-efi-x64-cdboot \
         isomd5sum \
+        libblockdev-plugins-all \
         net-tools \
         plymouth \
         squashfs-tools \
@@ -39,6 +41,8 @@ COPY system_files/etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirr
 # squashfs does not duplicate it. Keep the module tree available after the
 # switch-root, when installer services can still request additional modules.
 # The installer is English-only.
+# Attach tmux explicitly: anaconda.service starts only the background session.
+# Serial PTYs also need an active guest-side terminal service.
 RUN set -Eeuo pipefail; \
     python /usr/libexec/patch-anaconda-progress; \
     rm -f /usr/libexec/patch-anaconda-progress; \
@@ -51,6 +55,14 @@ RUN set -Eeuo pipefail; \
     mv /usr/share/anaconda/list-harddrives-stub /usr/bin/list-harddrives; \
     mv /etc/yum.repos.d /etc/anaconda.repos.d; \
     ln -sfn /usr/lib/systemd/system/anaconda.target /etc/systemd/system/default.target; \
+    install -d -m 0755 /etc/systemd/system/anaconda.target.wants; \
+    for tty in tty1 ttyS0; do \
+        ln -sfn /usr/lib/systemd/system/anaconda-tmux@.service \
+            "/etc/systemd/system/anaconda.target.wants/anaconda-tmux@${tty}.service"; \
+    done; \
+    ln -sfn /usr/lib/systemd/system/anaconda-shell@.service \
+        /etc/systemd/system/anaconda.target.wants/anaconda-shell@tty2.service; \
+    ln -sfn /dev/null /etc/systemd/system/serial-getty@ttyS0.service; \
     rm -f /usr/lib/systemd/system-generators/systemd-gpt-auto-generator; \
     ln -sfn /usr/lib/systemd/system/anaconda-shell@.service \
         /usr/lib/systemd/system/autovt@.service; \
@@ -72,8 +84,8 @@ RUN set -Eeuo pipefail; \
         /var/cache/* \
         /var/log/* \
         /var/tmp/*; \
-    find /usr/lib/locale -mindepth 1 -maxdepth 1 ! -name C.utf8 \
-        -exec rm -rf -- {} +; \
+    python -c 'import locale; locale.setlocale(locale.LC_ALL, "en_US.UTF-8")'; \
+    python -c 'import blivet; assert not blivet.missing_plugs, f"Missing storage plugins: {blivet.missing_plugs}"'; \
     command -v anaconda; \
     command -v bootc; \
     command -v grub2-mkimage; \
@@ -82,6 +94,11 @@ RUN set -Eeuo pipefail; \
     command -v podman; \
     command -v python; \
     command -v xorriso; \
+    test -s /usr/lib/systemd/system/anaconda-tmux@.service; \
+    test -s /usr/lib/systemd/system/anaconda-shell@.service; \
+    for tty in tty1 ttyS0; do \
+        test -s "/etc/systemd/system/anaconda.target.wants/anaconda-tmux@${tty}.service"; \
+    done; \
     bootc --help >/dev/null; \
     test ! -e /sysroot/ostree/repo; \
     test -s /usr/share/anaconda/interactive-defaults.ks
