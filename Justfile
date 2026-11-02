@@ -50,15 +50,12 @@ inspect target=("localhost/" + image_name) tag=default_tag:
     {{ engine }} run --rm --entrypoint /usr/bin/bash "{{ target }}:{{ tag }}" -c '
       set -Eeuo pipefail
       bootc container lint --fatal-warnings
-      export XDG_RUNTIME_DIR=/tmp/hyprland-verify
-      install -d -m 0700 "${XDG_RUNTIME_DIR}"
       rpm -q dolphin foot hyprland hyprland-guiutils hypridle hyprlock hyprpolkitagent \
         xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-hyprland \
         xdg-user-dirs libvirt-daemon-kvm qemu-kvm \
         virt-manager plasma-login-manager bootc
       /usr/libexec/bazzite-firebadnofire-include-packages verify \
         /usr/share/bazzite-firebadnofire/include.txt
-      test -s /usr/share/bazzite-firebadnofire/hyprland.lua
       test -s /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
       grep -Fqx "prefix = \"pubcode.archuser.org/universalblue/bazzite-firebadnofire\"" /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
       grep -Fqx "location = \"ghcr.io/firebadnofire/bazzite-firebadnofire\"" /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
@@ -66,8 +63,8 @@ inspect target=("localhost/" + image_name) tag=default_tag:
         grep -Fqx "location = \"pubcode.archuser.org/universalblue/bazzite-firebadnofire\""
       grep -A4 -F "[[registry.mirror]]" /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf | \
         grep -Fqx "location = \"ghcr.io/firebadnofire/bazzite-firebadnofire\""
-      Hyprland --verify-config --i-am-really-stupid \
-        --config /usr/share/bazzite-firebadnofire/hyprland.lua
+      /usr/libexec/bazzite-firebadnofire-verify-hyprland \
+        /usr/share/bazzite-firebadnofire/hyprland.lua
       test -x /usr/bin/looking-glass-client
       test -x /usr/libexec/xdg-desktop-portal-hyprland
       test -x /usr/libexec/xdg-desktop-portal-gtk

@@ -84,7 +84,31 @@ passed after its required `--` separator. The image also installs
 launcher.
 `just inspect` and Forgejo's **Inspect image contract** step validate the
 shipped `/usr/share/bazzite-firebadnofire/hyprland.lua` with Hyprland's
-`--verify-config` mode.
+real `--verify-config` parser through
+`/usr/libexec/bazzite-firebadnofire-verify-hyprland`. The helper requires
+container root to set up a private temporary home/runtime directory, then
+drops to numeric UID/GID 65534 with no supplementary groups or capabilities.
+It requires `config ok` and exit zero, and first checks that the verifier
+accepts minimal Lua and rejects both syntax and option-type errors. Each
+invocation has a 30-second timeout (with a five-second kill grace period).
+Missing files, parser errors, dependency failures, crashes, and timeouts fail
+inspection and block publication.
+
+This avoids a reproduced Hyprland **0.57.0-2.fc44** verifier bug: root can bind
+`/.socket2.sock`, after which the verifier accesses an uninitialized Wayland
+event loop. An unprivileged process cannot create that root-level socket and
+the parser completes. The resulting **Socket 2 bind failure** diagnostic is
+expected in this version's verification mode; it is printed, and no failing
+exit status is ignored. Desktop configuration and actual session IPC remain
+unchanged. See [diagnosis and removal criteria](docs/hyprland-verification.md).
+
+CI captures inspection output, including the RPM version, control results,
+parser diagnostics, and exit status, in the 14-day
+`image-inspection-<run>-<attempt>` Actions artifact and the job log. Upload uses
+the pinned Forgejo artifact action and checksum-pinned Node.js 24 from the
+existing disk workflows, installed only in the disposable job container.
+No new secrets or runner-host configuration are required. A crash is a failed
+inspection; reproduce it under GDB in a disposable container for a backtrace.
 
 The wrapper owns one systemd session lifecycle. After Hyprland publishes a
 fresh `WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP=Hyprland`, and
@@ -300,7 +324,8 @@ the job is x86_64 and can reach a working Docker daemon and Docker Buildx.
 That label launches a minimal `ubuntu:22.04` job container, not a preloaded
 GitHub-hosted-runner image. Each workflow therefore installs the Jammy Docker
 CLI/Buildx and performs an exact-ref shell checkout of this public repository.
-The disk workflow bootstrap also includes checksum-pinned Node.js 24 LTS.
+The disk workflow bootstrap and image-inspection diagnostic uploader also
+include checksum-pinned Node.js 24 LTS.
 This avoids assuming that `node`, `git`, or
 `docker` already exists inside the job container. Docker operations still
 require the runner administrator to expose a dedicated external DinD daemon.

@@ -111,6 +111,7 @@ sed -i \
     /usr/lib/os-release
 
 chmod 0755 \
+    /usr/libexec/bazzite-firebadnofire-verify-hyprland \
     /usr/libexec/bazzite-firebadnofire-rotate-wallpaper \
     /usr/libexec/bazzite-firebadnofire-screenshot \
     /usr/libexec/bazzite-firebadnofire-start-hyprland
@@ -148,6 +149,7 @@ rpm -q \
 /usr/libexec/bazzite-firebadnofire-include-packages verify \
     /usr/share/bazzite-firebadnofire/include.txt
 test -x /usr/libexec/bazzite-firebadnofire-start-hyprland
+test -x /usr/libexec/bazzite-firebadnofire-verify-hyprland
 test -x /usr/bin/foot
 test -x /usr/bin/start-hyprland
 test -x /usr/bin/hyprland-dialog

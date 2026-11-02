@@ -68,7 +68,8 @@ bash -n \
     scripts/validate-static.sh \
     system_files/usr/libexec/bazzite-firebadnofire-rotate-wallpaper \
     system_files/usr/libexec/bazzite-firebadnofire-screenshot \
-    system_files/usr/libexec/bazzite-firebadnofire-start-hyprland
+    system_files/usr/libexec/bazzite-firebadnofire-start-hyprland \
+    system_files/usr/libexec/bazzite-firebadnofire-verify-hyprland
 
 for command_name in python3 rg shellcheck; do
     command -v "${command_name}" >/dev/null || {
@@ -92,9 +93,11 @@ shellcheck \
     scripts/validate-static.sh \
     system_files/usr/libexec/bazzite-firebadnofire-rotate-wallpaper \
     system_files/usr/libexec/bazzite-firebadnofire-screenshot \
-    system_files/usr/libexec/bazzite-firebadnofire-start-hyprland
+    system_files/usr/libexec/bazzite-firebadnofire-start-hyprland \
+    system_files/usr/libexec/bazzite-firebadnofire-verify-hyprland
 
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-repo-keys.py
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/test-hyprland-verification.py
 PYTHONDONTWRITEBYTECODE=1 python3 network-installer/patch-anaconda-progress.py --self-test
 bash scripts/test-include-packages.sh
 bash scripts/test-oci-publication.sh
@@ -236,8 +239,8 @@ contract_sources = {
 }
 for source_name, source_text in contract_sources.items():
     for required in (
-        f"test -s {hyprland_default}",
-        f"--config {hyprland_default}",
+        "/usr/libexec/bazzite-firebadnofire-verify-hyprland",
+        hyprland_default,
         "rpm -q dolphin foot ",
         "hyprland-guiutils",
         "xdg-desktop-portal-gtk",
@@ -342,6 +345,16 @@ image_document = yaml.safe_load(image_workflow)
 if image_document["concurrency"].get("cancel-in-progress") is not False:
     raise ValueError("build.yml: an in-flight canonical publication must not be cancelled")
 image_steps = {step["name"]: step for step in image_document["jobs"]["image"]["steps"]}
+inspection = image_steps["Inspect image contract"]
+if "2>&1 | tee output/image-inspection/contract.log" not in inspection["run"]:
+    raise ValueError("build.yml: image inspection must retain logs with pipefail")
+if "set -Eeuo pipefail" not in inspection["run"]:
+    raise ValueError("build.yml: log capture must not mask inspection failures")
+if "--i-am-really-stupid" in inspection["run"]:
+    raise ValueError("build.yml: Hyprland verification must drop root privileges")
+artifact = image_steps["Retain image inspection diagnostics"]
+if artifact.get("if") != "always() && steps.inspect.outcome != 'skipped'":
+    raise ValueError("build.yml: diagnostics must upload after failed inspection")
 publication_steps = (
     "Log in to the Forgejo registry",
     "Push the commit traceability tag and resolve its canonical digest",

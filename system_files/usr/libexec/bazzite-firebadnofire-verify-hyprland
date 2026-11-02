@@ -1,0 +1,66 @@
+#!/usr/bin/bash
+# Run only in an inspection container; never start a graphical session.
+set -Eeuo pipefail
+
+config="${1:-/usr/share/bazzite-firebadnofire/hyprland.lua}"
+fail() { printf 'error: Hyprland verification: %s\n' "$*" >&2; exit 1; }
+[[ -s "${config}" ]] || fail "missing or empty configuration: ${config}"
+config="$(realpath -- "${config}")"
+for tool in Hyprland setpriv timeout mktemp; do
+    command -v "${tool}" >/dev/null || fail "environment: missing dependency ${tool}"
+done
+[[ "$(id -u)" == 0 ]] || fail "environment: invoke this helper as container root; it drops verifier privileges"
+
+# 0.57.0's verifier lazily binds /.socket2.sock, then touches a missing
+# Wayland event loop. Dropping privileges prevents that bind while retaining
+# the actual config parser. See docs/hyprland-verification.md in the source.
+work="$(mktemp -d /tmp/hyprland-verification.XXXXXXXX)"
+trap 'rm -rf -- "${work}"' EXIT
+install -d -m 0700 "${work}/runtime"
+chown -R 65534:65534 "${work}"
+chmod 0700 "${work}"
+printf 'Hyprland verification package: '
+rpm -q hyprland
+printf '%s\n' 'Verifier runs as UID/GID 65534 with no supplementary groups or capabilities.'
+printf '%s\n' 'Hyprland 0.57.0 may report Socket 2 bind failure: verification has no compositor IPC/event loop.'
+
+# The real parser must both accept a control and reject syntax and semantic
+# errors. Never treat a signal, timeout, or missing success marker as success.
+printf '\n' > "${work}/valid.lua"
+printf 'this is invalid lua!\n' > "${work}/syntax.lua"
+printf 'hl.config({ general = { border_size = "invalid" } })\n' > "${work}/semantic.lua"
+chmod 0644 "${work}"/*.lua
+
+verify() {
+    local label="$1" path="$2" expected="$3" status=0
+    setpriv --reuid=65534 --regid=65534 --clear-groups \
+        --inh-caps=-all --bounding-set=-all --no-new-privs \
+        env HOME="${work}" XDG_CONFIG_HOME="${work}" \
+        XDG_RUNTIME_DIR="${work}/runtime" LC_ALL=C \
+        timeout --kill-after=5s 30s Hyprland --verify-config --config "${path}" \
+        > "${work}/${label}.log" 2>&1 || status=$?
+    printf '\n--- Hyprland %s (exit %s) ---\n' "${label}" "${status}"
+    cat "${work}/${label}.log"
+    case "${status}" in
+        124) fail "${label}: verifier timed out (status ${status})" ;;
+        137) fail "${label}: verifier killed (status 137); check timeout escalation and container memory/OOM events" ;;
+        126|127) fail "${label}: environment/dependency failure (status ${status})" ;;
+    esac
+    (( status < 128 )) || fail "${label}: verifier crashed/terminated (status ${status}); reproduce under gdb as UID 65534"
+    if [[ "${expected}" == accept ]]; then
+        if grep -Eq 'syntax error|unexpected symbol|unfinished string' "${work}/${label}.log"; then
+            fail "${label}: invalid Lua syntax; see parser output above"
+        fi
+        [[ "${status}" == 0 ]] || fail "${label}: configuration validation or environment failed (status ${status}); see parser output above"
+        grep -qx 'config ok' "${work}/${label}.log" || fail "${label}: verifier returned zero without confirming config ok"
+    else
+        [[ "${status}" == 1 ]] || fail "${label}: negative control did not return a configuration error (status ${status})"
+        grep -Fq "${path}:" "${work}/${label}.log" || fail "${label}: negative control failed without a parser diagnostic"
+    fi
+}
+
+verify valid "${work}/valid.lua" accept
+verify syntax "${work}/syntax.lua" reject
+verify semantic "${work}/semantic.lua" reject
+verify shipped "${config}" accept
+printf '\nHyprland configuration and verifier controls passed.\n'

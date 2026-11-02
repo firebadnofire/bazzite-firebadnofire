@@ -162,21 +162,20 @@ jobs:
           echo "LOCAL_IMAGE=${local_image}" >> "${GITHUB_ENV}"
 
       - name: Inspect image contract
+        id: inspect
         shell: bash
         run: |
           set -Eeuo pipefail
+          mkdir -p output/image-inspection
           docker run --rm --entrypoint /usr/bin/bash "${LOCAL_IMAGE}" -c '
             set -Eeuo pipefail
             bootc container lint --fatal-warnings
-            export XDG_RUNTIME_DIR=/tmp/hyprland-verify
-            install -d -m 0700 "${XDG_RUNTIME_DIR}"
             rpm -q dolphin foot hyprland hyprland-guiutils hypridle hyprlock hyprpolkitagent \
               xdg-desktop-portal xdg-desktop-portal-gtk xdg-desktop-portal-hyprland \
               xdg-user-dirs libvirt-daemon-kvm qemu-kvm \
               virt-manager plasma-login-manager bootc
             /usr/libexec/bazzite-firebadnofire-include-packages verify \
               /usr/share/bazzite-firebadnofire/include.txt
-            test -s /usr/share/bazzite-firebadnofire/hyprland.lua
             test -s /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
             grep -Fqx "prefix = \"pubcode.archuser.org/universalblue/bazzite-firebadnofire\"" /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
             grep -Fqx "location = \"ghcr.io/firebadnofire/bazzite-firebadnofire\"" /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
@@ -184,8 +183,8 @@ jobs:
               grep -Fqx "location = \"pubcode.archuser.org/universalblue/bazzite-firebadnofire\""
             grep -A4 -F "[[registry.mirror]]" /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf | \
               grep -Fqx "location = \"ghcr.io/firebadnofire/bazzite-firebadnofire\""
-            Hyprland --verify-config --i-am-really-stupid \
-              --config /usr/share/bazzite-firebadnofire/hyprland.lua
+            /usr/libexec/bazzite-firebadnofire-verify-hyprland \
+              /usr/share/bazzite-firebadnofire/hyprland.lua
             test -x /usr/bin/looking-glass-client
             test -x /usr/libexec/xdg-desktop-portal-hyprland
             test -x /usr/libexec/xdg-desktop-portal-gtk
@@ -246,7 +245,42 @@ jobs:
             test "$(readlink -f /etc/systemd/system/display-manager.service)" = \
               /usr/lib/systemd/system/plasmalogin.service
             ! ldd /usr/bin/looking-glass-client | grep -q "not found"
-          '
+          ' 2>&1 | tee output/image-inspection/contract.log
+
+      - name: Prepare inspection artifact upload
+        if: always() && steps.inspect.outcome != 'skipped'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if command -v sudo >/dev/null; then
+            SUDO=sudo
+          elif [[ "$(id -u)" == 0 ]]; then
+            SUDO=""
+          else
+            echo "error: diagnostic upload setup requires sudo or container root" >&2
+            exit 1
+          fi
+          ${SUDO} apt-get install -y --no-install-recommends xz-utils
+          readonly node_version=v24.17.0
+          readonly node_archive="node-${node_version}-linux-x64.tar.xz"
+          readonly node_sha256=ab343a1b747c7cbf3630dfd7dbf818c5423fab2eb4f5ad1afc896f6bd121a917
+          curl --fail --location --silent --show-error \
+            --output "/tmp/${node_archive}" \
+            "https://nodejs.org/dist/${node_version}/${node_archive}"
+          printf '%s  %s\n' "${node_sha256}" "/tmp/${node_archive}" | \
+            sha256sum --check --strict
+          ${SUDO} tar --extract --xz --file "/tmp/${node_archive}" \
+            --directory /usr/local --strip-components=1
+          node --version
+
+      - name: Retain image inspection diagnostics
+        if: always() && steps.inspect.outcome != 'skipped'
+        uses: https://code.forgejo.org/forgejo/upload-artifact@16871d9e8cfcf27ff31822cac382bbb5450f1e1e
+        with:
+          name: image-inspection-${{ github.run_id }}-${{ github.run_attempt }}
+          path: output/image-inspection/
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Log in to the Forgejo registry
         if: github.event_name != 'pull_request'
