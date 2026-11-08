@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily bounded cleanup for bazzite-firebadnofire Forgejo CI
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 UTC
+Persistent=true
+RandomizedDelaySec=15m
+Unit=bazzite-firebadnofire-ci-gc.service
+
+[Install]
+WantedBy=timers.target

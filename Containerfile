@@ -4,9 +4,12 @@ COPY build_files /
 COPY include.txt /include.txt
 COPY system_files /system_files
 
-# Bazzite's NVIDIA-open variant supports Turing and newer GPUs, including every
-# GeForce RTX generation. Keep this digest synchronized with the stable tag.
-FROM ghcr.io/ublue-os/bazzite-nvidia-open:stable@sha256:23ee832c0eb9e0ff79bc10f2958b2f3bede290841b258ee45826604228964e0d
+ARG BAZZITE_BASE=ghcr.io/ublue-os/bazzite-nvidia-open:stable
+
+# CI resolves the upstream stable x86_64 manifest to an immutable digest before
+# invoking BuildKit. The tag-only default keeps local builds on the same stable
+# channel without pinning the repository to a superseded Fedora major.
+FROM ${BAZZITE_BASE} AS image
 
 ARG IMAGE_BUILD_DATE
 

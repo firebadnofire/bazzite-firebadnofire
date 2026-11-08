@@ -19,7 +19,9 @@ env:
   IMAGE_PATH: universalblue/bazzite-firebadnofire
   GHCR_REGISTRY: ghcr.io
   GHCR_IMAGE_PATH: firebadnofire/bazzite-firebadnofire
-  DOCKER_SMOKE_IMAGE: docker.io/library/hello-world:latest@sha256:5e23090353324d887c48ad5e5c56d294eab81588df9605b07d1afe895f9cc8f8
+  BAZZITE_BASE_TAG: ghcr.io/ublue-os/bazzite-nvidia-open:stable
+  CI_GC_LOCK_IMAGE: docker.io/library/alpine:3.22@sha256:9db2934886712d877c932e07249c75a59e6ca27adfbccc05261987a17bef2d63
+  DOCKER_SMOKE_IMAGE: docker.io/library/hello-world:latest@sha256:d1a8d0a4eeb63aff09f5f34d4d80505e0ba81905f36158cc3970d8e07179e59e
   MIN_RUNNER_FREE_BYTES: "64424509440"
   MIN_PUBLISH_FREE_BYTES: "42949672960"
 
@@ -134,6 +136,34 @@ jobs:
         shell: bash
         run: bash scripts/validate-static.sh
 
+      - name: Acquire shared CI cleanup lease
+        shell: bash
+        run: bash scripts/ci-gc-lease.sh acquire
+
+      - name: Resolve current Bazzite stable base
+        id: base
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          anonymous_config="$(mktemp -d)"
+          trap 'rm -rf -- "${anonymous_config}"' EXIT
+          manifest_json="$(DOCKER_CONFIG="${anonymous_config}" docker buildx imagetools inspect \
+            "${BAZZITE_BASE_TAG}" --format '{{json .Manifest}}')"
+          digest="$(python3 -c \
+            'import json, sys; print(json.load(sys.stdin)["digest"])' \
+            <<<"${manifest_json}")"
+          [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "error: upstream stable returned an invalid amd64 digest: ${digest}" >&2
+            exit 1
+          }
+          base_image="${BAZZITE_BASE_TAG}@${digest}"
+          DOCKER_CONFIG="${anonymous_config}" docker buildx imagetools inspect \
+            "${base_image}" >/dev/null
+          printf 'digest=%s\nimage=%s\n' "${digest}" "${base_image}" >> "${GITHUB_OUTPUT}"
+          printf 'BAZZITE_BASE_DIGEST=%s\nBAZZITE_BASE_IMAGE=%s\n' \
+            "${digest}" "${base_image}" >> "${GITHUB_ENV}"
+          echo "Resolved current upstream stable base: ${base_image}"
+
       - name: Build image
         shell: bash
         run: |
@@ -147,8 +177,12 @@ jobs:
 
           docker buildx build --load \
             --pull \
+            --no-cache-filter image \
             --platform linux/amd64 \
+            --build-arg "BAZZITE_BASE=${BAZZITE_BASE_IMAGE}" \
             --build-arg "IMAGE_BUILD_DATE=${image_build_date}" \
+            --label "org.opencontainers.image.base.digest=${BAZZITE_BASE_DIGEST}" \
+            --label "org.opencontainers.image.base.name=${BAZZITE_BASE_TAG}" \
             --label "org.opencontainers.image.created=${created}" \
             --label "org.opencontainers.image.description=${IMAGE_DESC}" \
             --label "org.opencontainers.image.documentation=${REPO_URL}" \
@@ -170,6 +204,16 @@ jobs:
         run: |
           set -Eeuo pipefail
           mkdir -p output/image-inspection
+          {
+            printf 'base_tag=%s\nbase_digest=%s\nbase_image=%s\n' \
+              "${BAZZITE_BASE_TAG}" "${BAZZITE_BASE_DIGEST}" "${BAZZITE_BASE_IMAGE}"
+            docker image inspect "${LOCAL_IMAGE}" --format '{{json .Config.Labels}}'
+            echo
+            echo 'Docker storage before inspection:'
+            docker system df
+            echo 'BuildKit cache before inspection:'
+            docker buildx du || true
+          } > output/image-inspection/build-report.txt
           docker run --rm --env "IMAGE_BUILD_DATE=${IMAGE_BUILD_DATE}" --entrypoint /usr/bin/bash "${LOCAL_IMAGE}" -c '
             set -Eeuo pipefail
             bootc container lint --fatal-warnings
@@ -257,6 +301,12 @@ jobs:
               /usr/lib/systemd/system/plasmalogin.service
             ! ldd /usr/bin/looking-glass-client | grep -q "not found"
           ' 2>&1 | tee output/image-inspection/contract.log
+          docker run --rm --entrypoint /usr/bin/bash "${LOCAL_IMAGE}" -c '
+            set -Eeuo pipefail
+            cat /usr/lib/os-release
+            echo
+            rpm -qa --qf "%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n" | sort
+          ' > output/image-inspection/package-inventory.txt
 
       - name: Prepare inspection artifact upload
         if: always() && steps.inspect.outcome != 'skipped'
@@ -272,9 +322,9 @@ jobs:
             exit 1
           fi
           ${SUDO} apt-get install -y --no-install-recommends xz-utils
-          readonly node_version=v24.17.0
+          readonly node_version=v24.22.2
           readonly node_archive="node-${node_version}-linux-x64.tar.xz"
-          readonly node_sha256=ab343a1b747c7cbf3630dfd7dbf818c5423fab2eb4f5ad1afc896f6bd121a917
+          readonly node_sha256=48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75
           curl --fail --location --silent --show-error \
             --output "/tmp/${node_archive}" \
             "https://nodejs.org/dist/${node_version}/${node_archive}"
@@ -365,8 +415,8 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          readonly version=v3.1.2
-          readonly expected=f7622ed3cf22e55e1ae6377c080979ff77a22da9981c11df222a2e444991e7cf
+          readonly version=v3.1.4
+          readonly expected=424e2c97d0b45fd7a6b608a87f090f35633f4c23ece5f092d48bba11aaf4bbfa
           curl --fail --location --silent --show-error \
             --output /tmp/cosign "https://github.com/sigstore/cosign/releases/download/${version}/cosign-linux-amd64"
           printf '%s  %s\n' "${expected}" /tmp/cosign | sha256sum --check --strict
@@ -631,3 +681,8 @@ jobs:
               echo "warning: logout failed for ${registry} after the job completed" >&2
             fi
           done
+
+      - name: Release shared CI cleanup lease
+        if: always()
+        shell: bash
+        run: bash scripts/ci-gc-lease.sh release

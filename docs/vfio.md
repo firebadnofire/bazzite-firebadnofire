@@ -28,7 +28,7 @@ The implementation is in `/usr/libexec/bazzite-firebadnofire-vfio/v1/`, behind t
 stable `/usr/libexec/bazzite-firebadnofire-vfio-run` entrypoint. The small adapter
 is `/etc/libvirt/hooks/qemu.d/90-bazzite-firebadnofire-vfio`. Units and the
 adapter's reference copy are image-managed. There is no first-boot download or
-runtime installation of scripts. Fedora 44's modular `virtqemud.service` and
+runtime installation of scripts. Fedora's modular `virtqemud.service` and
 supporting sockets are enabled; conflicting legacy `libvirtd` defaults are
 disabled in the image. The QEMU hook ABI and `qemu:///system` URI are unchanged.
 No service is restarted on a running workstation by image construction. Local

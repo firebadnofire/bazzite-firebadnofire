@@ -49,6 +49,7 @@ EOF
 
 cat > "${workdir}/expected-dnf.log" <<'EOF'
 -y
+--refresh
 install
 alpha
 beta-package

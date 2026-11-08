@@ -20,6 +20,10 @@ required_files=(
     scripts/retry-once.sh
     scripts/publish-github-release.sh
     scripts/sign-release-artifacts.sh
+    scripts/ci-gc-lease.sh
+    scripts/test-ci-gc.sh
+    ops/forgejo-runner/bazzite-firebadnofire-ci-gc
+    ops/forgejo-runner/dind-daemon.json
     network-installer/Containerfile
     network-installer/interactive-defaults.ks
     network-installer/iso.yaml
@@ -63,6 +67,9 @@ bash -n \
     scripts/retry-once.sh \
     scripts/publish-github-release.sh \
     scripts/sign-release-artifacts.sh \
+    scripts/ci-gc-lease.sh \
+    scripts/test-ci-gc.sh \
+    ops/forgejo-runner/bazzite-firebadnofire-ci-gc \
     scripts/test-oci-publication.sh \
     scripts/test-retry-once.sh \
     scripts/validate-static.sh \
@@ -88,6 +95,9 @@ shellcheck \
     scripts/retry-once.sh \
     scripts/publish-github-release.sh \
     scripts/sign-release-artifacts.sh \
+    scripts/ci-gc-lease.sh \
+    scripts/test-ci-gc.sh \
+    ops/forgejo-runner/bazzite-firebadnofire-ci-gc \
     scripts/test-oci-publication.sh \
     scripts/test-retry-once.sh \
     scripts/validate-static.sh \
@@ -114,6 +124,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 network-installer/patch-anaconda-progress.py -
 bash scripts/test-include-packages.sh
 bash scripts/test-oci-publication.sh
 bash scripts/test-retry-once.sh
+bash scripts/test-ci-gc.sh
 
 python3 - <<'PY'
 from pathlib import Path
@@ -344,6 +355,12 @@ for required in (
     'for tag in "${TRACEABILITY_TAG}" "${IMMUTABLE_TAG}" stable',
     '[[ "${tag_digest}" != "${DIGEST}" ]]',
     'DOCKER_CONFIG="${anonymous_config}" docker buildx imagetools inspect',
+    "BAZZITE_BASE_TAG: ghcr.io/ublue-os/bazzite-nvidia-open:stable",
+    '--no-cache-filter image',
+    '--build-arg "BAZZITE_BASE=${BAZZITE_BASE_IMAGE}"',
+    'org.opencontainers.image.base.digest=${BAZZITE_BASE_DIGEST}',
+    "bash scripts/ci-gc-lease.sh acquire",
+    "bash scripts/ci-gc-lease.sh release",
 ):
     if required not in image_workflow:
         raise ValueError(f"build.yml: missing production contract: {required}")
@@ -382,6 +399,8 @@ if image_steps["Log out of registries"].get("if") != (
     "always() && github.event_name != 'pull_request'"
 ):
     raise ValueError("build.yml: registry logout must always run after non-PR events")
+if image_steps["Release shared CI cleanup lease"].get("if") != "always()":
+    raise ValueError("build.yml: shared cleanup lease must always be released")
 cleanup_step = image_steps["Clean up this run's loaded image"]
 if cleanup_step.get("if") != "always()":
     raise ValueError("build.yml: exact run-local image cleanup must always run")
@@ -417,6 +436,7 @@ if not (
     < image_step_order.index("Mirror signed image to GHCR")
     < image_step_order.index("Clean up this run's loaded image")
     < image_step_order.index("Log out of registries")
+    < image_step_order.index("Release shared CI cleanup lease")
 ):
     raise ValueError("build.yml: canonical publication, GHCR mirroring, cleanup, and logout are misordered")
 
@@ -745,11 +765,11 @@ if "${GITHUB_OUTPUT}" not in needs_diagnostic:
 installer_containerfile = Path("network-installer/Containerfile").read_text(encoding="utf-8")
 installer_from = installer_containerfile.splitlines()[0]
 if not re.fullmatch(
-    r"FROM quay\.io/fedora/fedora-bootc:44@sha256:[0-9a-f]{64}",
+    r"FROM quay\.io/fedora/fedora-bootc:45@sha256:[0-9a-f]{64}",
     installer_from,
 ):
     raise ValueError(
-        "network installer Fedora 44 base must use a complete immutable digest"
+        "network installer Fedora 45 base must use a complete immutable digest"
     )
 for required in (
     "anaconda-core",
@@ -868,8 +888,15 @@ if rg --line-number \
     exit 1
 fi
 
-grep -q '^FROM ghcr.io/ublue-os/bazzite-nvidia-open:stable@sha256:' Containerfile || {
-    echo "error: Containerfile must pin the Bazzite NVIDIA-open base by digest" >&2
+grep -q '^ARG BAZZITE_BASE=ghcr.io/ublue-os/bazzite-nvidia-open:stable$' Containerfile || {
+    echo "error: Containerfile must default to the Bazzite NVIDIA-open stable channel" >&2
+    exit 1
+}
+# The literal Dockerfile expansion is the contract.
+# shellcheck disable=SC2016
+expected_bazzite_from='FROM ${BAZZITE_BASE} AS image'
+grep -Fqx "${expected_bazzite_from}" Containerfile || {
+    echo "error: Containerfile must consume CI's resolved immutable Bazzite base" >&2
     exit 1
 }
 grep -q '^IMAGE_REGISTRY="pubcode.archuser.org"$' bazzite-firebadnofire.env || {

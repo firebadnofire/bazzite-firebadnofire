@@ -30,7 +30,7 @@ installing it on a workstation.
 | Area | Current implementation |
 | --- | --- |
 | Architecture | x86_64 only |
-| Base | Digest-pinned `ghcr.io/ublue-os/bazzite-nvidia-open:stable` |
+| Base | Current x86_64 `ghcr.io/ublue-os/bazzite-nvidia-open:stable`, resolved to an immutable digest when each build starts |
 | OS display name | `firebadnofire-bazzite` in `NAME` and `PRETTY_NAME`; compatibility remains `ID=bazzite` and `ID_LIKE=fedora` |
 | GPU target | NVIDIA Turing and newer, including GeForce RTX; other hardware inherits the upstream Bazzite behavior |
 | Desktop | Hyprland 0.56-compatible Lua configuration with XWayland, adapted from the operator's workstation setup |
@@ -53,7 +53,7 @@ desktop.
 
 ## Repository layout
 
-- `Containerfile` pins the reviewed Bazzite base and runs image construction.
+- `Containerfile` consumes the exact Bazzite base resolved by CI and runs image construction.
 - `build_files/build.sh` installs packages, copies the system overlay, enables
   services, and asserts the built image contract.
 - `include.txt` lists additional RPM packages to bake into every image build.
@@ -216,8 +216,9 @@ package installation fails the build rather than being skipped.
 verify the installed package set without duplicating the list elsewhere.
 
 Most additions come from Fedora, RPM Fusion, Terra, or repositories already
-configured by Bazzite. Fedora 44 does not currently publish Hyprland itself, so
-the build temporarily enables the GPG-checked `lionheartp/Hyprland` COPR for
+configured by Bazzite. The Fedora release inherited from current Bazzite stable
+does not provide the complete required Hyprland package set, so the build
+temporarily enables the GPG-checked `lionheartp/Hyprland` COPR for
 only these packages:
 
 - `hyprland`
@@ -230,12 +231,13 @@ only these packages:
 
 The COPR is disabled immediately afterward and is not left enabled on installed
 systems. This is still a third-party supply-chain dependency. The RPM versions
-and Fedora repositories are mutable, so pinning the base-image digest alone does
+and Fedora repositories are mutable, so resolving the base-image digest does
 not make builds bit-for-bit reproducible. Review COPR ownership, package diffs,
 and current build status before accepting an automated rebuild.
 
-Fedora 44 does not provide a maintained Looking Glass client RPM. The build
-therefore compiles the official stable B7 source archive after checking its
+The current Fedora release does not provide a maintained Looking Glass client
+RPM. The build therefore compiles the reviewed official stable B7 source
+archive after checking its
 pinned SHA-256 digest and installs the client under `/usr`. This is the narrow
 exception to the distro-package preference. A targeted
 `-Wno-error=maybe-uninitialized` compiler flag works around a GCC 16 warning in
@@ -291,34 +293,52 @@ Passing these commands proves source checks and an OCI build. It does not prove
 registry publication, signature discovery, graphical boot, suspend/resume,
 NVIDIA display behavior, gaming performance, VM boot, or physical hardware.
 
-### Updating the pinned bases
+### Base-image freshness and reviewed pins
 
-Treat every base-image digest change as a supply-chain update:
+Every image workflow resolves the x86_64 Bazzite NVIDIA-open `stable` tag to an
+immutable digest before building, verifies the exact reference anonymously,
+and passes `stable@sha256:...` to `Containerfile`. Upstream stable may therefore
+advance across Fedora major releases without a stale checked-in Bazzite digest.
+The image stage uses `--no-cache-filter image`, and every DNF5 install uses
+`--refresh`, so scheduled builds cannot reuse old install layers or repository
+metadata. Packages inherited from Bazzite are not independently upgraded; their
+supported versions come from the newly resolved upstream image.
+
+The base name and digest are recorded as OCI labels and in the 14-day image
+inspection artifact with `/etc/os-release`, a sorted RPM inventory, contract
+versions, and Docker/BuildKit usage. No Flatpak is baked into this image; the
+Vesktop binding only launches a user-installed Flatpak.
+
+Looking Glass remains pinned to reviewed B7 source bytes because its host and
+client must be compatible. A changed official stable archive fails its SHA-256
+check for review. CI actions, Node.js, Cosign, the Docker smoke image, the
+Fedora network-installer base, and bootc-image-builder remain immutable reviewed
+supply-chain inputs.
+
+Treat changes to those reviewed pins as supply-chain updates:
 
 1. Read the upstream Bazzite or bootc-image-builder release notes.
 2. Inspect the current manifest with Skopeo or another registry client:
 
    ```bash
-   skopeo inspect docker://ghcr.io/ublue-os/bazzite-nvidia-open:stable
    skopeo inspect docker://quay.io/centos-bootc/bootc-image-builder:latest
-   skopeo inspect --format '{{.Digest}}' docker://quay.io/fedora/fedora-bootc:44
+   skopeo inspect --format '{{.Digest}}' docker://quay.io/fedora/fedora-bootc:45
    ```
 
-3. Update the Bazzite digest in `Containerfile`, the Image Builder digest in
-   `bazzite-firebadnofire.env` and `.forgejo/workflows/build-disk.yml` together,
-   or the Fedora bootc digest in `network-installer/Containerfile`, according to
-   the input being updated.
-   Verify the Fedora pin by digest against Quay before building (Skopeo requires
+3. Update the Image Builder digest in `bazzite-firebadnofire.env` and its
+   workflow references together, or the Fedora bootc digest in
+   `network-installer/Containerfile`, according to the input being updated.
+   Verify the Fedora 45 pin by digest against Quay before building (Skopeo requires
    omitting the tag when a digest is supplied):
 
    ```bash
    installer_base="$(awk '/^FROM / {print $2; exit}' network-installer/Containerfile)"
    skopeo inspect --override-arch amd64 \
-     "docker://${installer_base/:44@/@}"
+     "docker://${installer_base/:45@/@}"
    ```
 
    If Quay returns `manifest unknown`, the pinned manifest is unavailable;
-   resolve and verify a new Fedora 44 digest before updating the pin.
+   resolve and verify a new Fedora 45 digest before updating the pin.
 4. Run static validation and the complete affected build. For the workstation
    image, also run image inspection and VM tests; for the network installer,
    force-pull and build its container before dispatching the ISO workflow.
@@ -669,6 +689,49 @@ unique to the run and an `always()` cleanup removes only tags that still point
 to that run's image. It does not prune shared BuildKit or disk-image caches and
 does not remove remote registry tags.
 
+### Runner storage bounds and automatic cleanup
+
+The live runner uses the default Docker-driver BuildKit embedded in the
+dedicated `forgejo-runner-dind` daemon. Its `/etc/docker/daemon.json` is mounted
+from `/home/william/docker/forgejo-runner/dind-daemon.json` and enables native
+BuildKit garbage collection with `defaultKeepStorage` set to 30 GB. This is a
+cache-retention target, not a quota for images, volumes, container writable
+layers, logs, Actions caches, or the persistent bootc source store. The daemon
+also rotates newly created container JSON logs at 10 MB with five files.
+
+Templates for the daemon configuration, cleanup command, and systemd units live
+under `ops/forgejo-runner/`. The server installs the command as
+`/usr/local/sbin/bazzite-firebadnofire-ci-gc` and the units as
+`/etc/systemd/system/bazzite-firebadnofire-ci-gc.{service,timer}`. The timer runs
+daily at 03:00 UTC with a randomized delay and invokes `--apply`; running the
+command without arguments is a non-mutating dry run.
+
+The image workflow and janitor synchronize through the protected Docker volume
+`bazzite-firebadnofire-ci-gc-lock-v1`. A workflow holds a shared lease from
+before base resolution through final cleanup. The janitor holds the exclusive
+lease and rechecks the daemon after acquisition, closing cleanup/startup races.
+It skips an active daemon, removes only labeled project resources older than 72
+hours, prunes only project-labeled dangling images older than seven days, and
+asks BuildKit to prune unused cache toward the 30 GB retention target. The BIB
+image and lock volumes are explicitly protected. Disk workflows remove
+superseded source images under their existing exclusive cache lock, retaining
+the current source image and shared layers rather than every historical image.
+
+The Forgejo action-download cache is measured separately. It is untouched below
+5 GB; above that threshold only entries unused for 30 days are eligible until
+the cache falls below the target. Run-scoped images and volumes, the BIB source
+store, action downloads, registry storage, Forgejo artifacts, host Docker data,
+and unrelated project data remain separate accounting categories; the BuildKit
+target does not bound them.
+
+Before changing the runner deployment, copy the Compose file, runner config,
+daemon JSON, cleanup command, and units into a timestamped mode-0700 backup
+under `/home/william/docker/forgejo-runner/backups/`. Validate JSON with
+`dockerd --validate`, render Compose, and confirm no job is running before
+recreating only DinD and the runner. Roll back by restoring those files and
+recreating those two services; never restart the host Docker daemon or
+broad-prune its shared workloads.
+
 Forgejo remains the canonical publication. After its three tags and signature
 are verified, the workflow pushes the traceability tag to GHCR and requires the
 GHCR registry-reported digest to equal the canonical Forgejo digest. It signs
@@ -782,7 +845,7 @@ request ASCII-armored `.asc` signatures.
 For the smallest network-dependent installer, manually dispatch
 **Actions → Build and release network installer ISO → Run workflow**. The
 `.forgejo/workflows/build-net.yml` workflow builds a purpose-specific Fedora
-44 bootc/Anaconda environment from `network-installer/Containerfile` with the
+45 bootc/Anaconda environment from `network-installer/Containerfile` with the
 current unified Image Builder `bootc-generic-iso` path. It does **not** pass a
 workstation payload to Image Builder and does not embed the
 `bazzite-firebadnofire` OCI image. The build extracts and inspects the finished
@@ -994,9 +1057,10 @@ exclusive-lock pruning, rollback, and warm-cache verification commands.
 ### Terra Mesa repository keys
 
 Bazzite supplies `/etc/yum.repos.d/terra-mesa.repo` through
-`terra-release-mesa`; `terra-gpg-keys` supplies
-`/etc/pki/rpm-gpg/RPM-GPG-KEY-terra44-mesa`. The inspected published Fedora 44
-image already contained this key. The manifest depsolver's metadata verifier
+`terra-release-mesa`; `terra-gpg-keys` supplies the release-qualified
+`/etc/pki/rpm-gpg/RPM-GPG-KEY-terra<release>-mesa` key. The image build verifies
+the key for the Fedora release inherited from Bazzite stable. The manifest
+depsolver's metadata verifier
 can resolve the repo's absolute `file://` key URL against the **builder** root
 instead of the source image root, producing a misleading missing-key error.
 

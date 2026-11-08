@@ -1,4 +1,4 @@
-FROM quay.io/fedora/fedora-bootc:44@sha256:6718b0634e138d1909e752dc0f7d8a203ede6ece33bc637f72282bde3d44887b
+FROM quay.io/fedora/fedora-bootc:45@sha256:9f71877d287e784a7e018f4fca0071bebf493bddb52bf58eeead353c88af256b
 
 # Keep the boot environment focused on installation. The workstation image is
 # deliberately not an input to this build and is pulled only after ISO boot.

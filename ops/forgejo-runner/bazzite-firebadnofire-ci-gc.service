@@ -1,0 +1,13 @@
+[Unit]
+Description=Bound bazzite-firebadnofire Forgejo CI storage
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=william
+Group=users
+ExecStart=/usr/local/sbin/bazzite-firebadnofire-ci-gc --apply
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

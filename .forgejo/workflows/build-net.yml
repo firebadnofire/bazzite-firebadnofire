@@ -11,9 +11,9 @@ concurrency:
 env:
   IMAGE_REPOSITORY: pubcode.archuser.org/universalblue/bazzite-firebadnofire
   IMAGE_MIRROR: ghcr.io/firebadnofire/bazzite-firebadnofire
-  IMAGE_BUILDER_IMAGE: ghcr.io/osbuild/image-builder-cli:latest@sha256:99fbadf80b412fe4ee2f82f42e44dce42ebdde506b496549da17b2fdd00458da
-  BIB_IMAGE: ghcr.io/osbuild/image-builder-cli:latest@sha256:99fbadf80b412fe4ee2f82f42e44dce42ebdde506b496549da17b2fdd00458da
-  DOCKER_SMOKE_IMAGE: docker.io/library/hello-world:latest@sha256:5e23090353324d887c48ad5e5c56d294eab81588df9605b07d1afe895f9cc8f8
+  IMAGE_BUILDER_IMAGE: ghcr.io/osbuild/image-builder-cli:latest@sha256:8e60767c0d4af3ec8bb854e531005c5d333418b7944ca44fc9a72b99abe65d33
+  BIB_IMAGE: ghcr.io/osbuild/image-builder-cli:latest@sha256:8e60767c0d4af3ec8bb854e531005c5d333418b7944ca44fc9a72b99abe65d33
+  DOCKER_SMOKE_IMAGE: docker.io/library/hello-world:latest@sha256:d1a8d0a4eeb63aff09f5f34d4d80505e0ba81905f36158cc3970d8e07179e59e
 
 jobs:
   prepare:
@@ -184,6 +184,12 @@ jobs:
           storage_volume="netiso-storage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           container="netiso-builder-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           helper="${container}-copy"
+          created_epoch="$(date +%s)"
+          ci_labels=(
+            --label io.firebadnofire.ci.project=bazzite-firebadnofire
+            --label io.firebadnofire.ci.role=ephemeral
+            --label "io.firebadnofire.ci.created=${created_epoch}"
+          )
           cleanup() {
             for name in "${container}" "${helper}"; do
               if docker container inspect "${name}" >/dev/null 2>&1; then
@@ -205,9 +211,9 @@ jobs:
           cp -a \
             system_files/etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf \
             build-context/system_files/etc/containers/registries.conf.d/
-          docker volume create "${output_volume}" >/dev/null
-          docker volume create "${storage_volume}" >/dev/null
-          docker create --name "${container}" \
+          docker volume create "${ci_labels[@]}" "${output_volume}" >/dev/null
+          docker volume create "${ci_labels[@]}" "${storage_volume}" >/dev/null
+          docker create --name "${container}" "${ci_labels[@]}" \
             --privileged \
             --network host \
             --security-opt label=type:unconfined_t \
@@ -232,7 +238,7 @@ jobs:
 
           rm -rf output/netiso
           mkdir -p output/netiso
-          docker create --name "${helper}" \
+          docker create --name "${helper}" "${ci_labels[@]}" \
             --volume "${output_volume}:/output:ro" \
             --entrypoint /usr/bin/true "${IMAGE_BUILDER_IMAGE}" >/dev/null
           docker cp "${helper}:/output/." output/netiso/
@@ -341,9 +347,9 @@ jobs:
           ${SUDO} apt-get install -y --no-install-recommends \
             ca-certificates curl docker.io git gnupg jq xz-utils
 
-          readonly node_version=v24.17.0
+          readonly node_version=v24.22.2
           readonly node_archive="node-${node_version}-linux-x64.tar.xz"
-          readonly node_sha256=ab343a1b747c7cbf3630dfd7dbf818c5423fab2eb4f5ad1afc896f6bd121a917
+          readonly node_sha256=48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75
           curl --fail --location --silent --show-error \
             --output "/tmp/${node_archive}" \
             "https://nodejs.org/dist/${node_version}/${node_archive}"

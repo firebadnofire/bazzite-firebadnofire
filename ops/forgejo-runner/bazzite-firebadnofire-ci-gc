@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+readonly mode="${1:---dry-run}"
+readonly dind="${DIND_CONTAINER:-forgejo-runner-dind}"
+readonly lock_volume="bazzite-firebadnofire-ci-gc-lock-v1"
+readonly lock_image="docker.io/library/alpine:3.22@sha256:9db2934886712d877c932e07249c75a59e6ca27adfbccc05261987a17bef2d63"
+readonly project="bazzite-firebadnofire"
+readonly now="${CI_GC_NOW:-$(date +%s)}"
+readonly ephemeral_seconds=$((72 * 60 * 60))
+readonly action_cache="/home/william/docker/forgejo-runner/data/.cache/act"
+readonly action_cache_limit_kib=$((5 * 1024 * 1024))
+janitor="bazzite-ci-janitor-${now}"
+
+[[ "${mode}" == --dry-run || "${mode}" == --apply ]] || {
+    echo "usage: $0 [--dry-run|--apply]" >&2
+    exit 2
+}
+[[ "${now}" =~ ^[0-9]+$ ]]
+
+inner() {
+    docker exec "${dind}" docker "$@"
+}
+
+remove_container() {
+    local name="$1"
+    if [[ "${mode}" == --apply ]]; then
+        inner rm -f "${name}" >/dev/null
+        echo "Removed stale CI container: ${name}"
+    else
+        echo "Would remove stale CI container: ${name}"
+    fi
+}
+
+remove_volume() {
+    local name="$1"
+    if [[ "${mode}" == --apply ]]; then
+        inner volume rm "${name}" >/dev/null
+        echo "Removed stale CI volume: ${name}"
+    else
+        echo "Would remove stale CI volume: ${name}"
+    fi
+}
+
+cleanup_janitor() {
+    if [[ "${mode}" == --apply ]]; then
+        inner rm -f "${janitor}" >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup_janitor EXIT
+
+docker container inspect "${dind}" >/dev/null
+if [[ "${mode}" == --apply ]]; then
+    inner volume create \
+        --label io.firebadnofire.ci.protected=true \
+        --label io.firebadnofire.ci.role=gc-lock \
+        "${lock_volume}" >/dev/null
+elif ! inner volume inspect "${lock_volume}" >/dev/null 2>&1; then
+    echo "Would create protected cleanup lock volume: ${lock_volume}"
+fi
+if inner volume inspect "${lock_volume}" >/dev/null 2>&1; then
+    [[ "$(inner volume inspect --format \
+        '{{index .Labels "io.firebadnofire.ci.role"}}' "${lock_volume}")" == gc-lock ]]
+fi
+
+# A killed runner can leave the shared lease behind. It is safe to remove only
+# an expired lease when it is the sole running inner-Docker container.
+mapfile -t running < <(inner ps --format '{{.Names}}')
+if (( ${#running[@]} > 0 )); then
+    for name in "${running[@]}"; do
+        role="$(inner container inspect --format \
+            '{{index .Config.Labels "io.firebadnofire.ci.role"}}' "${name}")"
+        created="$(inner container inspect --format \
+            '{{index .Config.Labels "io.firebadnofire.ci.created"}}' "${name}")"
+        if [[ "${role}" != gc-lease || ! "${created}" =~ ^[0-9]+$ || \
+            $((now - created)) -lt ${ephemeral_seconds} ]]; then
+            echo "CI daemon is active (${name}); cleanup skipped"
+            exit 0
+        fi
+    done
+    for name in "${running[@]}"; do
+        remove_container "${name}"
+    done
+    [[ "${mode}" == --apply ]] || true
+fi
+
+if [[ "${mode}" == --dry-run ]]; then
+    echo "Dry-run: not acquiring the exclusive cleanup lock"
+else
+    inner run --detach --name "${janitor}" \
+        --label io.firebadnofire.ci.project=bazzite-firebadnofire \
+        --label io.firebadnofire.ci.role=gc-janitor \
+        --volume "${lock_volume}:/lock" --entrypoint /bin/sh "${lock_image}" -c \
+        "rm -f /lock/janitor.ready; exec flock -x /lock/gc.lock -c 'touch /lock/janitor.ready; exec sleep 3600'" \
+        >/dev/null
+    for _ in $(seq 1 120); do
+        inner exec "${janitor}" test -e /lock/janitor.ready && break
+        sleep 1
+    done
+    inner exec "${janitor}" test -e /lock/janitor.ready || {
+        echo "error: timed out acquiring the exclusive CI cleanup lock" >&2
+        exit 1
+    }
+
+    mapfile -t raced < <(inner ps --format '{{.Names}}' | grep -vFx "${janitor}" || true)
+    if (( ${#raced[@]} > 0 )); then
+        echo "CI job started while the janitor waited; cleanup skipped: ${raced[*]}"
+        exit 0
+    fi
+fi
+
+echo "Docker usage before cleanup:"
+inner system df
+
+while IFS= read -r name; do
+    [[ -n "${name}" ]] || continue
+    created="$(inner container inspect --format \
+        '{{index .Config.Labels "io.firebadnofire.ci.created"}}' "${name}")"
+    [[ "${created}" =~ ^[0-9]+$ ]] || {
+        echo "warning: refusing unlabeled-age container ${name}" >&2
+        continue
+    }
+    (( now - created >= ephemeral_seconds )) && remove_container "${name}"
+done < <(inner ps -a --filter "label=io.firebadnofire.ci.project=${project}" \
+    --filter label=io.firebadnofire.ci.role=ephemeral --format '{{.Names}}')
+
+while IFS= read -r name; do
+    [[ -n "${name}" ]] || continue
+    if [[ "${name}" == bazzite-firebadnofire-bib-image-cache-v1 ||
+            "${name}" == bazzite-firebadnofire-bib-image-cache-lock-v1 ||
+            "${name}" == "${lock_volume}" ]]; then
+        echo "warning: refusing protected CI volume ${name}" >&2
+        continue
+    fi
+    created="$(inner volume inspect --format \
+        '{{index .Labels "io.firebadnofire.ci.created"}}' "${name}")"
+    [[ "${created}" =~ ^[0-9]+$ ]] || {
+        echo "warning: refusing unlabeled-age volume ${name}" >&2
+        continue
+    }
+    (( now - created >= ephemeral_seconds )) && remove_volume "${name}"
+done < <(inner volume ls --filter "label=io.firebadnofire.ci.project=${project}" \
+    --filter label=io.firebadnofire.ci.role=ephemeral --format '{{.Name}}')
+
+if [[ "${mode}" == --apply ]]; then
+    inner image prune --force --filter until=168h \
+        --filter label=org.opencontainers.image.source=https://pubcode.archuser.org/universalblue/bazzite-firebadnofire
+    inner builder prune --force --filter until=168h --reserved-space 30GB
+else
+    echo "Would prune project-labeled dangling images older than 168 hours"
+    echo "Would prune BuildKit cache unused for 168 hours toward the 30 GB retention target"
+fi
+
+if [[ -d "${action_cache}" ]]; then
+    resolved_cache="$(realpath "${action_cache}")"
+    [[ "${resolved_cache}" == /home/william/docker/forgejo-runner/data/.cache/act ]]
+    cache_kib="$(du -sk "${resolved_cache}" | awk '{print $1}')"
+    if (( cache_kib > action_cache_limit_kib )); then
+        find "${resolved_cache}" -mindepth 2 -maxdepth 2 -type d -mtime +30 \
+            -print0 | sort -z | while IFS= read -r -d '' path; do
+                if [[ "${mode}" == --apply ]]; then
+                    rm -rf -- "${path}"
+                    echo "Removed stale runner action cache entry: ${path}"
+                else
+                    echo "Would remove stale runner action cache entry: ${path}"
+                fi
+                current_kib="$(du -sk "${resolved_cache}" | awk '{print $1}')"
+                (( current_kib <= action_cache_limit_kib )) && break
+            done
+    fi
+fi
+
+echo "Docker usage after cleanup:"
+inner system df

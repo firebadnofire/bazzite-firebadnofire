@@ -104,7 +104,7 @@ its Docker CLI inside the DinD container:
 ```bash
 cache=bazzite-firebadnofire-bib-image-cache-v1
 lock=bazzite-firebadnofire-bib-image-cache-lock-v1
-bib='quay.io/centos-bootc/bootc-image-builder:latest@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b'
+bib='quay.io/centos-bootc/bootc-image-builder:latest@sha256:0c956023e79895db8bee8f7a973b6db5bae6d98d5f69db194135ca1649e51cd5'
 
 docker exec forgejo-runner-dind docker volume inspect "$cache" "$lock"
 docker exec forgejo-runner-dind du -sh "/var/lib/docker/volumes/${cache}/_data"
@@ -134,7 +134,7 @@ the exclusive lock:
 ```bash
 cache=bazzite-firebadnofire-bib-image-cache-v1
 lock=bazzite-firebadnofire-bib-image-cache-lock-v1
-bib='quay.io/centos-bootc/bootc-image-builder:latest@sha256:2b52843ea2bfda73b0a08d97e76b734393b1d3a804681b9fabb26723bd3a2f0b'
+bib='quay.io/centos-bootc/bootc-image-builder:latest@sha256:0c956023e79895db8bee8f7a973b6db5bae6d98d5f69db194135ca1649e51cd5'
 stale='pubcode.archuser.org/universalblue/bazzite-firebadnofire@sha256:<old-digest>'
 docker exec -e STALE_IMAGE="$stale" forgejo-runner-dind docker run --rm --privileged \
   --security-opt label=type:unconfined_t \

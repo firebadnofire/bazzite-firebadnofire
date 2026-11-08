@@ -42,7 +42,7 @@ if (( ${#packages[@]} == 0 )); then
 fi
 
 if [[ "${action}" == "install" ]]; then
-    dnf5 -y install "${packages[@]}"
+    dnf5 -y --refresh install "${packages[@]}"
 fi
 
 # Verify both the build-time transaction and later inspection of the final OCI

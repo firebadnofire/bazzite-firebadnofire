@@ -20,6 +20,7 @@ trap 'echo "error: disk handoff failed at line ${LINENO} (${1:-unknown}); inspec
 }
 repository_hash="$(printf '%s' "${GITHUB_REPOSITORY}" | sha256sum)"
 scope="${repository_hash:0:16}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+created_epoch="$(date +%s)"
 digest_hex="${IMAGE_DIGEST#sha256:}"
 release_prefix=""
 if [[ -n "${RELEASE_DATE:-}" ]]; then
@@ -80,11 +81,18 @@ case "${1:-}" in
         fi
         docker volume create --label "handoff.scope=${scope}" \
             --label "handoff.revision=${GITHUB_SHA}" \
-            --label "handoff.digest=${IMAGE_DIGEST}" "${volume}" >/dev/null
+            --label "handoff.digest=${IMAGE_DIGEST}" \
+            --label io.firebadnofire.ci.project=bazzite-firebadnofire \
+            --label io.firebadnofire.ci.role=ephemeral \
+            --label "io.firebadnofire.ci.created=${created_epoch}" \
+            "${volume}" >/dev/null
         (cd release-input; sha256sum "${filename}" > SHA256SUMS)
         trap remove_helper EXIT
         # A stopped helper only: no code from the builder image is executed.
         docker create --name "${helper}" --label "handoff.scope=${scope}" \
+            --label io.firebadnofire.ci.project=bazzite-firebadnofire \
+            --label io.firebadnofire.ci.role=ephemeral \
+            --label "io.firebadnofire.ci.created=${created_epoch}" \
             --volume "${volume}:/handoff" --entrypoint /usr/bin/true "${BIB_IMAGE}" >/dev/null
         docker cp "release-input/${filename}" "${helper}:/handoff/${filename}"
         docker cp release-input/SHA256SUMS "${helper}:/handoff/SHA256SUMS"
@@ -98,6 +106,9 @@ case "${1:-}" in
             temporary_dir="$(mktemp -d)"
             trap 'remove_helper; rm -rf "${temporary_dir}"' EXIT
             docker create --name "${helper}" --label "handoff.scope=${scope}" \
+                --label io.firebadnofire.ci.project=bazzite-firebadnofire \
+                --label io.firebadnofire.ci.role=ephemeral \
+                --label "io.firebadnofire.ci.created=${created_epoch}" \
                 --volume "${volume}:/handoff:ro" --entrypoint /usr/bin/true "${BIB_IMAGE}" >/dev/null
             docker cp "${helper}:/handoff/." "${temporary_dir}/"
             [[ -f "${temporary_dir}/${filename}" && ! -L "${temporary_dir}/${filename}" ]]

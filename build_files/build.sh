@@ -43,11 +43,12 @@ looking_glass_build_packages=(
     wayland-protocols-devel
 )
 
-# Fedora does not currently ship Hyprland for Fedora 44. Enable this narrowly
-# scoped, GPG-checked COPR only for the packages Bazzite needs, then disable it
-# so installed systems do not receive unreviewed packages from it implicitly.
+# Enable the narrowly scoped, GPG-checked COPR only for the packages Bazzite
+# needs, then disable it so installed systems do not receive unreviewed
+# packages from it implicitly. Repository compatibility is validated by the
+# transaction against the Fedora release inherited from Bazzite stable.
 dnf5 -y copr enable "${HYPRLAND_COPR}"
-dnf5 -y install \
+dnf5 -y --refresh install \
     hypridle \
     hyprland \
     hyprland-guiutils \
@@ -57,7 +58,7 @@ dnf5 -y install \
     xdg-desktop-portal-hyprland
 dnf5 -y copr disable "${HYPRLAND_COPR}"
 
-dnf5 -y install \
+dnf5 -y --refresh install \
     "${desktop_packages[@]}" \
     "${admin_packages[@]}" \
     "${development_packages[@]}" \
@@ -76,8 +77,8 @@ install -D -m 0755 \
 /usr/libexec/bazzite-firebadnofire-include-packages install \
     /usr/share/bazzite-firebadnofire/include.txt
 
-# Fedora 44 has no maintained Looking Glass client package. Build the current
-# stable upstream source archive (which includes its submodules) after checking
+# Build the reviewed stable Looking Glass source archive (which includes its
+# submodules) after checking
 # its pinned digest. Do not install the optional kvmfr kernel module: IVSHMEM,
 # SELinux policy, PCI binding, and guest/host pairing are machine-specific.
 readonly LOOKING_GLASS_VERSION="B7"
@@ -142,8 +143,9 @@ rm -rf \
     /run/screen \
     /run/selinux-policy
 
-# Fedora 44 clients use the modular QEMU socket. Do not enable the conflicting
-# monolithic service alongside Fedora's modular preset. No running host changes.
+# Current Fedora clients use the modular QEMU socket. Do not enable the
+# conflicting monolithic service alongside Fedora's modular preset. No running
+# host changes.
 systemctl disable libvirtd.service libvirtd.socket libvirtd-ro.socket libvirtd-admin.socket
 systemctl enable virtqemud.service virtqemud.socket \
     virtnetworkd.socket virtnodedevd.socket virtsecretd.socket virtstoraged.socket \
