@@ -188,6 +188,10 @@ test -s /usr/share/licenses/bazzite-firebadnofire-vfio/COPYING
 test -s /usr/share/licenses/bazzite-firebadnofire-vfio/NOTICE
 
 # Fail the image build if the user-facing workstation contract is incomplete.
+# Trace this bounded, non-secret assertion block so a missing path or changed
+# upstream identity is reported as the exact failing contract, rather than only
+# as an opaque Containerfile RUN failure.
+set -x
 rpm -q \
     dolphin \
     foot \
@@ -243,6 +247,7 @@ test -f /usr/share/xdg-desktop-portal/portals/hyprland.portal
 test -f /usr/share/dbus-1/services/org.kde.dolphin.FileManager1.service
 test -f /usr/lib/tmpfiles.d/bazzite-firebadnofire.conf
 test -f /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
+set +x
 grep -Fqx 'prefix = "pubcode.archuser.org/universalblue/bazzite-firebadnofire"' \
     /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
 grep -Fqx 'location = "ghcr.io/firebadnofire/bazzite-firebadnofire"' \
