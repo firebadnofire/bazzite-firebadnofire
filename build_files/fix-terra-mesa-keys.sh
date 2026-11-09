@@ -47,9 +47,15 @@ for suffix in mesa mesa-source; do
     test "$(grep -Fxc "${new}" "${override}")" = 1 || {
         echo "error: unexpected Terra key override in ${override}" >&2; exit 1;
     }
-    dnf5 --dump-repo-config="terra-${suffix}" | grep -Fxq \
-        "gpgkey = https://repos.fyralabs.com/terra${releasever}-${suffix}/key.asc" || {
+    # Capture before matching: with pipefail, grep -q may close a larger DNF5
+    # dump early and turn dnf5's harmless SIGPIPE into a false validation error.
+    effective_config="$(dnf5 --dump-repo-config="terra-${suffix}")"
+    grep -Fxq \
+        "gpgkey = https://repos.fyralabs.com/terra${releasever}-${suffix}/key.asc" \
+        <<< "${effective_config}" || {
         echo "error: DNF5 did not apply the Terra key override for terra-${suffix}" >&2
+        grep -E '^(enabled|gpgcheck|gpgkey|repo_gpgcheck|sslverify) = ' \
+            <<< "${effective_config}" >&2
         exit 1
     }
 done
