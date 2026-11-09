@@ -247,7 +247,6 @@ test -f /usr/share/xdg-desktop-portal/portals/hyprland.portal
 test -f /usr/share/dbus-1/services/org.kde.dolphin.FileManager1.service
 test -f /usr/lib/tmpfiles.d/bazzite-firebadnofire.conf
 test -f /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
-set +x
 grep -Fqx 'prefix = "pubcode.archuser.org/universalblue/bazzite-firebadnofire"' \
     /etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
 grep -Fqx 'location = "ghcr.io/firebadnofire/bazzite-firebadnofire"' \
@@ -302,3 +301,4 @@ bash /ctx/fix-terra-mesa-keys.sh
 python3 /ctx/validate-repo-keys.py
 
 dnf5 clean all
+set +x
