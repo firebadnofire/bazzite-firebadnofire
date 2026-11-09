@@ -30,6 +30,7 @@ required_files=(
     network-installer/iso.yaml
     network-installer/patch-anaconda-progress.py
     system_files/etc/containers/registries.conf.d/20-bazzite-firebadnofire-mirror.conf
+    system_files/etc/dnf/repos.override.d/90-bazzite-firebadnofire-terra-mesa.repo
     scripts/test-oci-publication.sh
     scripts/test-retry-once.sh
     system_files/usr/lib/tmpfiles.d/bazzite-firebadnofire.conf
@@ -258,6 +259,26 @@ for required in (
 ):
     if required not in build_source:
         raise ValueError(f"build.sh: missing Hyprland runtime contract: {required}")
+
+terra_fix_source = Path("build_files/fix-terra-mesa-keys.sh").read_text(encoding="utf-8")
+for required in (
+    "/usr/share/dnf5/repos.d/terra-mesa.repo",
+    "/etc/yum.repos.d/terra-mesa.repo",
+    'dnf5 --dump-repo-config="terra-${suffix}"',
+    "expected one Terra Mesa repository definition",
+):
+    if required not in terra_fix_source:
+        raise ValueError(f"Terra key fix is missing the Fedora-compatible contract: {required}")
+
+terra_override_source = Path(
+    "system_files/etc/dnf/repos.override.d/90-bazzite-firebadnofire-terra-mesa.repo"
+).read_text(encoding="utf-8")
+for suffix in ("mesa", "mesa-source"):
+    required = (
+        f"gpgkey=https://repos.fyralabs.com/terra$releasever-{suffix}/key.asc"
+    )
+    if terra_override_source.count(required) != 1:
+        raise ValueError(f"Terra key override must contain exactly one: {required}")
 
 nettle_patch = Path("build_files/looking-glass-b7-nettle4.patch").read_text(
     encoding="utf-8"

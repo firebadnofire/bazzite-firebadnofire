@@ -1,0 +1,8 @@
+# Keep package signatures fail-closed while avoiding builder-root resolution of
+# image-local file:// keys during bootc disk construction. The build verifies
+# each HTTPS key byte-for-byte against the key packaged by terra-gpg-keys.
+[terra-mesa]
+gpgkey=https://repos.fyralabs.com/terra$releasever-mesa/key.asc
+
+[terra-mesa-source]
+gpgkey=https://repos.fyralabs.com/terra$releasever-mesa-source/key.asc

@@ -6,10 +6,29 @@ set -Eeuo pipefail
 # require its contents to match the key shipped in the pinned source image.
 releasever="$(rpm --eval '%{fedora}')"
 readonly releasever
-readonly repo=/etc/yum.repos.d/terra-mesa.repo
-test -s "${repo}"
+readonly override=/etc/dnf/repos.override.d/90-bazzite-firebadnofire-terra-mesa.repo
+
+# Fedora 45 moved distribution-owned repository definitions out of /etc.
+# Require exactly one supported upstream location so a future layout change
+# fails closed instead of leaving an ineffective override behind.
+repo_candidates=(
+    /etc/yum.repos.d/terra-mesa.repo
+    /usr/share/dnf5/repos.d/terra-mesa.repo
+)
+repos=()
+for candidate in "${repo_candidates[@]}"; do
+    [[ -s "${candidate}" ]] && repos+=("${candidate}")
+done
+if (( ${#repos[@]} != 1 )); then
+    printf 'error: expected one Terra Mesa repository definition, found %d\n' \
+        "${#repos[@]}" >&2
+    exit 1
+fi
+repo="${repos[0]}"
+readonly repo
 test "$(grep -c '^gpgcheck=1$' "${repo}")" = 2
-test "$(grep -c '^repo_gpgcheck=1$' "${repo}")" = 2
+test "$(grep -Ec '^repo_gpgcheck=[01]$' "${repo}")" = 2
+test -s "${override}"
 temporary_key="$(mktemp)"
 trap 'rm -f "${temporary_key}"' EXIT
 for suffix in mesa mesa-source; do
@@ -23,13 +42,14 @@ for suffix in mesa mesa-source; do
         echo "error: ${url} differs from packaged ${key}; review Terra key rotation" >&2
         exit 1
     }
-    # Literal $releasever remains in the repo so DNF expands it as usual.
-    old="gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-terra\$releasever-${suffix}"
+    # Literal $releasever remains in the override so DNF expands it as usual.
     new="gpgkey=https://repos.fyralabs.com/terra\$releasever-${suffix}/key.asc"
-    if grep -Fxq "${old}" "${repo}"; then
-        sed -i "s|^${old}$|${new}|" "${repo}"
-    fi
-    grep -Fxq "${new}" "${repo}" || {
-        echo "error: unexpected Terra key configuration in ${repo}" >&2; exit 1;
+    test "$(grep -Fxc "${new}" "${override}")" = 1 || {
+        echo "error: unexpected Terra key override in ${override}" >&2; exit 1;
+    }
+    dnf5 --dump-repo-config="terra-${suffix}" | grep -Fxq \
+        "gpgkey = https://repos.fyralabs.com/terra${releasever}-${suffix}/key.asc" || {
+        echo "error: DNF5 did not apply the Terra key override for terra-${suffix}" >&2
+        exit 1
     }
 done

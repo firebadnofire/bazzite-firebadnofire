@@ -48,7 +48,14 @@ def main():
         for path in sorted(Path(directory).glob("*")):
             if path.is_file():
                 variables[path.name] = path.read_text().partition("\n")[0].strip()
-    count = validate(Path("/etc/yum.repos.d"), variables)
+    count = sum(
+        validate(Path(directory), variables)
+        for directory in (
+            "/etc/yum.repos.d",
+            "/etc/distro.repos.d",
+            "/usr/share/dnf5/repos.d",
+        )
+    )
     print(f"Repository GPG key validation passed ({count} local references)")
 
 

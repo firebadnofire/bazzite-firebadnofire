@@ -1067,27 +1067,34 @@ exclusive-lock pruning, rollback, and warm-cache verification commands.
 
 ### Terra Mesa repository keys
 
-Bazzite supplies `/etc/yum.repos.d/terra-mesa.repo` through
-`terra-release-mesa`; `terra-gpg-keys` supplies the release-qualified
+Bazzite supplies the Terra Mesa definition through `terra-release-mesa` (in
+`/usr/share/dnf5/repos.d/terra-mesa.repo` on Fedora 45; older images used
+`/etc/yum.repos.d/terra-mesa.repo`); `terra-gpg-keys` supplies the release-qualified
 `/etc/pki/rpm-gpg/RPM-GPG-KEY-terra<release>-mesa` key. The image build verifies
 the key for the Fedora release inherited from Bazzite stable. The manifest
 depsolver's metadata verifier
 can resolve the repo's absolute `file://` key URL against the **builder** root
 instead of the source image root, producing a misleading missing-key error.
 
-At the end of image construction, `build_files/fix-terra-mesa-keys.sh` changes
+The system overlay installs the supported DNF5 override
+`/etc/dnf/repos.override.d/90-bazzite-firebadnofire-terra-mesa.repo`. At the end
+of image construction, `build_files/fix-terra-mesa-keys.sh` verifies that only
+one supported upstream definition exists and that DNF5 applies the override for
 only the Mesa and Mesa-source GPG-key locations to Terra's official
 `https://repos.fyralabs.com/terra$releasever-mesa/key.asc` (and `-mesa-source`)
 endpoints. It first requires each downloaded key to match the packaged local
 key byte-for-byte; missing keys or key rotations fail the build for review.
-The local files remain installed. Repo enablement, package `gpgcheck=1`, and
-metadata `repo_gpgcheck=1` are preserved. HTTPS certificate verification stays
-enabled. Subsequent depsolving depends on Terra's HTTPS endpoint and its key
-distribution, rather than a builder-local key file; no runner changes are needed.
+The local files remain installed. Repo enablement, package `gpgcheck=1`, and the
+upstream metadata-signing setting are preserved (Fedora 45's current definition
+uses `repo_gpgcheck=0`). HTTPS certificate verification stays enabled.
+Subsequent depsolving depends on Terra's HTTPS endpoint and its key distribution,
+rather than a builder-local key file; no runner changes are needed.
 
 `build_files/validate-repo-keys.py` then checks every enabled section in
-`/etc/yum.repos.d/*.repo`, expanding Fedora/architecture and DNF vars and failing
-on unresolved variables or missing, empty, or unreadable local GPG-key files.
+the standard DNF5 definition directories (`/etc/yum.repos.d`,
+`/etc/distro.repos.d`, and `/usr/share/dnf5/repos.d`), expanding
+Fedora/architecture and DNF vars and failing on unresolved variables or missing,
+empty, or unreadable local GPG-key files.
 It conservatively checks the on-disk `enabled` setting even if DNF5 overrides
 disable a repo, because other solvers may not consume those overrides. This
 gate checks source-image completeness; the HTTPS repair separately addresses
@@ -1100,9 +1107,10 @@ just validate
 just build
 podman run --rm --entrypoint /usr/bin/bash localhost/bazzite-firebadnofire:stable -c '
   set -Eeuo pipefail
-  cat /etc/yum.repos.d/terra-mesa.repo
-  rpm -qf /etc/yum.repos.d/terra-mesa.repo /etc/pki/rpm-gpg/RPM-GPG-KEY-terra44-mesa
-  test -s /etc/pki/rpm-gpg/RPM-GPG-KEY-terra44-mesa
+  dnf5 --dump-repo-config=terra-mesa | grep '^gpgkey = '
+  rpm -qf /usr/share/dnf5/repos.d/terra-mesa.repo \
+    /etc/pki/rpm-gpg/RPM-GPG-KEY-terra$(rpm --eval '%{fedora}')-mesa
+  test -s /etc/pki/rpm-gpg/RPM-GPG-KEY-terra$(rpm --eval '%{fedora}')-mesa
   dnf5 -y --repo=terra-mesa --refresh makecache
 '
 ```
