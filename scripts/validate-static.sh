@@ -250,6 +250,9 @@ for required in (
     's/^PRETTY_NAME=.*/PRETTY_NAME="firebadnofire-bazzite"/',
     "grep -Fqx 'ID=bazzite' /etc/os-release",
     "grep -Fqx 'ID_LIKE=\"fedora\"' /etc/os-release",
+    "rpm -q terra-xorg-x11-server-Xwayland",
+    "dnf5 -y --refresh swap",
+    "rpm -q --whatprovides 'xorg-x11-server-Xwayland(x86-64)'",
 ):
     if required not in build_source:
         raise ValueError(f"build.sh: missing Hyprland runtime contract: {required}")

@@ -146,10 +146,10 @@ done < <(inner volume ls --filter "label=io.firebadnofire.ci.project=${project}"
 if [[ "${mode}" == --apply ]]; then
     inner image prune --force --filter until=168h \
         --filter label=org.opencontainers.image.source=https://pubcode.archuser.org/universalblue/bazzite-firebadnofire
-    inner builder prune --force --filter until=168h --reserved-space 30GB
+    inner builder prune --all --force --max-used-space 30GB
 else
     echo "Would prune project-labeled dangling images older than 168 hours"
-    echo "Would prune BuildKit cache unused for 168 hours toward the 30 GB retention target"
+    echo "Would prune unused BuildKit cache toward the 30 GB retention target"
 fi
 
 if [[ -d "${action_cache}" ]]; then

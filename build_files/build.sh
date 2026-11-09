@@ -47,6 +47,18 @@ looking_glass_build_packages=(
 # needs, then disable it so installed systems do not receive unreviewed
 # packages from it implicitly. Repository compatibility is validated by the
 # transaction against the Fedora release inherited from Bazzite stable.
+# Bazzite currently swaps Fedora's Xwayland for Terra's package. Terra omits
+# the arch-qualified provide required by the Hyprland COPR, so swap back only
+# while that incompatibility exists. Fail closed if Fedora's provider is not
+# installed successfully.
+if rpm -q terra-xorg-x11-server-Xwayland >/dev/null 2>&1 &&
+        ! rpm -q --whatprovides 'xorg-x11-server-Xwayland(x86-64)' >/dev/null 2>&1; then
+    dnf5 -y --refresh swap \
+        terra-xorg-x11-server-Xwayland \
+        xorg-x11-server-Xwayland
+fi
+rpm -q --whatprovides 'xorg-x11-server-Xwayland(x86-64)'
+
 dnf5 -y copr enable "${HYPRLAND_COPR}"
 dnf5 -y --refresh install \
     hypridle \

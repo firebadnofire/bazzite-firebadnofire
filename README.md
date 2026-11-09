@@ -304,6 +304,14 @@ The image stage uses `--no-cache-filter image`, and every DNF5 install uses
 metadata. Packages inherited from Bazzite are not independently upgraded; their
 supported versions come from the newly resolved upstream image.
 
+Current Bazzite stable replaces Fedora's Xwayland package with Terra's build,
+which omits the arch-qualified capability required by the Hyprland COPR. The
+image build conditionally swaps only that package back to Fedora's
+`xorg-x11-server-Xwayland` before installing Hyprland, verifies the required
+provide, and otherwise fails closed. The swap becomes a no-op if upstream
+restores a compatible provider; it is not a general base-image downgrade or
+upgrade.
+
 The base name and digest are recorded as OCI labels and in the 14-day image
 inspection artifact with `/etc/os-release`, a sorted RPM inventory, contract
 versions, and Docker/BuildKit usage. No Flatpak is baked into this image; the

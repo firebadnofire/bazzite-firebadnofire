@@ -31,7 +31,7 @@ output="$(PATH="${workdir}:${PATH}" FAKE_DOCKER_LOG="${log}" CI_GC_NOW=999999 \
     bash "${root}/ops/forgejo-runner/bazzite-firebadnofire-ci-gc" --dry-run)"
 grep -Fq "Would remove stale CI container: stale-container" <<<"${output}"
 grep -Fq "Would remove stale CI volume: stale-volume" <<<"${output}"
-grep -Fq "Would prune BuildKit cache" <<<"${output}"
+grep -Fq "Would prune unused BuildKit cache" <<<"${output}"
 if grep -Eq ' exec forgejo-runner-dind docker (rm|volume rm|image prune|builder prune)' "${log}"; then
     echo "error: dry-run issued a destructive Docker command" >&2
     exit 1
