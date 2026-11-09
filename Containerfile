@@ -1,10 +1,10 @@
+ARG BAZZITE_BASE=ghcr.io/ublue-os/bazzite-nvidia-open:stable
+
 # Allow build scripts to be referenced without being copied into the final image
 FROM scratch AS ctx
 COPY build_files /
 COPY include.txt /include.txt
 COPY system_files /system_files
-
-ARG BAZZITE_BASE=ghcr.io/ublue-os/bazzite-nvidia-open:stable
 
 # CI resolves the upstream stable x86_64 manifest to an immutable digest before
 # invoking BuildKit. The tag-only default keeps local builds on the same stable

@@ -892,6 +892,12 @@ grep -q '^ARG BAZZITE_BASE=ghcr.io/ublue-os/bazzite-nvidia-open:stable$' Contain
     echo "error: Containerfile must default to the Bazzite NVIDIA-open stable channel" >&2
     exit 1
 }
+first_instruction="$(grep -Ev '^[[:space:]]*(#|$)' Containerfile | head -n 1)"
+[[ "${first_instruction}" == \
+    'ARG BAZZITE_BASE=ghcr.io/ublue-os/bazzite-nvidia-open:stable' ]] || {
+    echo "error: BAZZITE_BASE must be a global ARG before the first FROM" >&2
+    exit 1
+}
 # The literal Dockerfile expansion is the contract.
 # shellcheck disable=SC2016
 expected_bazzite_from='FROM ${BAZZITE_BASE} AS image'
