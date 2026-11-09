@@ -172,6 +172,11 @@ systemctl enable virtqemud.service virtqemud.socket \
 chmod 0755 /etc/libvirt/hooks/qemu.d/90-bazzite-firebadnofire-vfio \
     /usr/libexec/bazzite-firebadnofire-vfio-run /usr/bin/vfio-host-recover \
     /usr/bin/vfio-host-check
+chmod 0644 \
+    /usr/lib/systemd/system/bazzite-firebadnofire-vfio-inhibit.service \
+    /usr/lib/systemd/system/bazzite-firebadnofire-vfio-reconcile.service \
+    /usr/lib/systemd/system/bazzite-firebadnofire-vfio-reconcile.timer \
+    /usr/lib/tmpfiles.d/bazzite-firebadnofire.conf
 /usr/libexec/bazzite-firebadnofire-vfio-run check-deployment
 python3 -I -c 'import ast, dbus; from pathlib import Path; ast.parse(Path("/usr/libexec/bazzite-firebadnofire-vfio/v1/vfio.py").read_text())'
 systemd-analyze verify \

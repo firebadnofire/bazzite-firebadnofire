@@ -280,6 +280,30 @@ for suffix in ("mesa", "mesa-source"):
     if terra_override_source.count(required) != 1:
         raise ValueError(f"Terra key override must contain exactly one: {required}")
 
+tmpfiles_source = Path(
+    "system_files/usr/lib/tmpfiles.d/bazzite-firebadnofire.conf"
+).read_text(encoding="utf-8")
+for required in (
+    "d /var/lib/libvirt/qemu/varstore 0751 qemu qemu - -",
+    "d /var/lib/libvirt/secrets 0700 root root - -",
+):
+    if tmpfiles_source.count(required) != 1:
+        raise ValueError(f"tmpfiles contract must contain exactly one: {required}")
+mode_match = re.search(
+    r"chmod 0644 \\\n(?P<paths>(?:    /usr/.*(?: \\\n|\n))+)",
+    build_source,
+)
+if mode_match is None:
+    raise ValueError("build.sh is missing immutable file mode normalization")
+for required in (
+    "/usr/lib/systemd/system/bazzite-firebadnofire-vfio-inhibit.service",
+    "/usr/lib/systemd/system/bazzite-firebadnofire-vfio-reconcile.service",
+    "/usr/lib/systemd/system/bazzite-firebadnofire-vfio-reconcile.timer",
+    "/usr/lib/tmpfiles.d/bazzite-firebadnofire.conf",
+):
+    if required not in mode_match.group("paths"):
+        raise ValueError(f"build.sh must normalize immutable file modes: {required}")
+
 nettle_patch = Path("build_files/looking-glass-b7-nettle4.patch").read_text(
     encoding="utf-8"
 )
