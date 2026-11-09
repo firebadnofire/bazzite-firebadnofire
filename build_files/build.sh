@@ -38,7 +38,7 @@ looking_glass_build_packages=(
     binutils-devel cmake dejavu-sans-mono-fonts fontconfig-devel
     libdecor-devel libglvnd-devel libsamplerate-devel libXcursor-devel
     libXi-devel libXinerama-devel libXpresent-devel libXrandr-devel
-    libXScrnSaver-devel libxkbcommon-x11-devel make nettle-devel
+    libXScrnSaver-devel libxkbcommon-x11-devel make nettle-devel patch
     pipewire-devel pkgconf-pkg-config pulseaudio-libs-devel spice-protocol wayland-devel
     wayland-protocols-devel
 )
@@ -103,6 +103,9 @@ curl --fail --location --silent --show-error \
 printf '%s  %s\n' "${LOOKING_GLASS_SHA256}" "${looking_glass_archive}" |
     sha256sum --check --strict
 tar --extract --gzip --file "${looking_glass_archive}" --directory /tmp
+patch --batch --forward --strip=1 \
+    --directory="/tmp/looking-glass-${LOOKING_GLASS_VERSION}/repos/PureSpice" \
+    < /ctx/looking-glass-b7-nettle4.patch
 cmake \
     -S "/tmp/looking-glass-${LOOKING_GLASS_VERSION}/client" \
     -B "/tmp/looking-glass-${LOOKING_GLASS_VERSION}/client/build" \

@@ -319,7 +319,10 @@ Vesktop binding only launches a user-installed Flatpak.
 
 Looking Glass remains pinned to reviewed B7 source bytes because its host and
 client must be compatible. A changed official stable archive fails its SHA-256
-check for review. CI actions, Node.js, Cosign, the Docker smoke image, the
+check for review. Fedora 45's Nettle 4 API requires the exact upstream
+PureSpice compatibility patch from merged commit `37802d0`; the patch is kept
+in `build_files/looking-glass-b7-nettle4.patch` and applied fail-closed to the
+checksum-pinned B7 tree. CI actions, Node.js, Cosign, the Docker smoke image, the
 Fedora network-installer base, and bootc-image-builder remain immutable reviewed
 supply-chain inputs.
 

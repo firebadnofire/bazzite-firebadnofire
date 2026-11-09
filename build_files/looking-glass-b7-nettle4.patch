@@ -1,0 +1,23 @@
+# Upstream: https://github.com/gnif/PureSpice/commit/37802d09b500e4a615d9cc36c1d1388bcf999a97
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 4193d45..ac3739f 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -11,0 +12,7 @@ pkg_check_modules(SPICE_PKGCONFIG REQUIRED
++if (SPICE_PKGCONFIG_nettle_VERSION)
++	if (SPICE_PKGCONFIG_nettle_VERSION VERSION_GREATER_EQUAL "4.0")
++		message(STATUS "Using nettle >= 4.0 compatibility")
++		add_compile_definitions(USE_NETTLE_GE_4)
++	endif()
++endif()
++
+diff --git a/src/rsa.c b/src/rsa.c
+index 73fba92..a5f384b 100644
+--- a/src/rsa.c
++++ b/src/rsa.c
+@@ -65 +65,5 @@ static void sha1(uint8_t * hash, const uint8_t *data, unsigned int len)
++#if defined(USE_NETTLE_GE_4)
++  sha1_digest(&ctx, hash);
++#else
+   sha1_digest(&ctx, SHA1_HASH_LEN, hash);
++#endif

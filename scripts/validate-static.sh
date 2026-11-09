@@ -11,6 +11,7 @@ required_files=(
     .forgejo/workflows/build-iso.yml
     .forgejo/workflows/build-net.yml
     bazzite-firebadnofire.env
+    build_files/looking-glass-b7-nettle4.patch
     cosign.pub
     disk_config/ci-storage.conf
     disk_config/ci-writable-storage.conf
@@ -253,9 +254,21 @@ for required in (
     "rpm -q terra-xorg-x11-server-Xwayland",
     "dnf5 -y --refresh swap",
     "rpm -q --whatprovides 'xorg-x11-server-Xwayland(x86-64)'",
+    "< /ctx/looking-glass-b7-nettle4.patch",
 ):
     if required not in build_source:
         raise ValueError(f"build.sh: missing Hyprland runtime contract: {required}")
+
+nettle_patch = Path("build_files/looking-glass-b7-nettle4.patch").read_text(
+    encoding="utf-8"
+)
+for required in (
+    "37802d09b500e4a615d9cc36c1d1388bcf999a97",
+    "add_compile_definitions(USE_NETTLE_GE_4)",
+    "sha1_digest(&ctx, hash);",
+):
+    if required not in nettle_patch:
+        raise ValueError(f"Looking Glass Nettle 4 patch is incomplete: {required}")
 
 contract_sources = {
     "Justfile": Path("Justfile").read_text(encoding="utf-8"),
